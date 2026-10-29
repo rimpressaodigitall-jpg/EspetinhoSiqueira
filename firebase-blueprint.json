@@ -1,0 +1,160 @@
+{
+  "entities": {
+    "RestaurantConfig": {
+      "title": "RestaurantConfig",
+      "description": "General settings, branding, address, and operating hours for the restaurant",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "maxLength": 120 },
+        "tagline": { "type": "string", "maxLength": 200 },
+        "logoUrl": { "type": "string", "maxLength": 500 },
+        "address": { "type": "string", "maxLength": 300 },
+        "phone": { "type": "string", "maxLength": 50 },
+        "pixKey": { "type": "string", "maxLength": 100 },
+        "publicAppUrl": { "type": "string", "maxLength": 500 },
+        "serviceTaxPercent": { "type": "number" },
+        "estimatedKdsAlertMinutes": { "type": "number" },
+        "businessHours": { "type": "string", "maxLength": 500 },
+        "updatedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["name"]
+    },
+    "Category": {
+      "title": "Category",
+      "description": "Menu category classification",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 64 },
+        "name": { "type": "string", "maxLength": 100 },
+        "order": { "type": "number" },
+        "icon": { "type": "string", "maxLength": 50 },
+        "active": { "type": "boolean" },
+        "updatedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["name", "order"]
+    },
+    "MenuItem": {
+      "title": "MenuItem",
+      "description": "Menu dish or beverage item",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 64 },
+        "categoryId": { "type": "string", "maxLength": 64 },
+        "name": { "type": "string", "maxLength": 120 },
+        "description": { "type": "string", "maxLength": 500 },
+        "price": { "type": "number" },
+        "imageUrl": { "type": "string", "maxLength": 500 },
+        "available": { "type": "boolean" },
+        "prepTimeMinutes": { "type": "number" },
+        "featured": { "type": "boolean" },
+        "updatedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["name", "price", "categoryId"]
+    },
+    "Table": {
+      "title": "Table",
+      "description": "Dining room table information and current operational state",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 64 },
+        "tableNumber": { "type": "string", "maxLength": 20 },
+        "capacity": { "type": "number" },
+        "status": {
+          "type": "string",
+          "enum": ["available", "occupied", "calling_waiter", "bill_requested"]
+        },
+        "activeOrderId": { "type": "string", "maxLength": 64 },
+        "callReason": { "type": "string", "maxLength": 200 },
+        "paymentMethod": { "type": "string", "maxLength": 50 },
+        "updatedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["tableNumber", "status"]
+    },
+    "Order": {
+      "title": "Order",
+      "description": "Customer order sent to kitchen with line items and status tracking",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 64 },
+        "tableNumber": { "type": "string", "maxLength": 20 },
+        "customerName": { "type": "string", "maxLength": 100 },
+        "status": {
+          "type": "string",
+          "enum": ["received", "preparing", "ready", "delivered", "paid", "cancelled"]
+        },
+        "items": { "type": "string", "maxLength": 10000 },
+        "subtotal": { "type": "number" },
+        "serviceFee": { "type": "number" },
+        "totalAmount": { "type": "number" },
+        "paymentMethod": { "type": "string", "maxLength": 50 },
+        "generalNotes": { "type": "string", "maxLength": 500 },
+        "createdAt": { "type": "string", "maxLength": 64 },
+        "updatedAt": { "type": "string", "maxLength": 64 },
+        "readyAt": { "type": "string", "maxLength": 64 },
+        "closedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["tableNumber", "status", "totalAmount"]
+    },
+    "ServiceCall": {
+      "title": "ServiceCall",
+      "description": "Waiter notification or bill request from table",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 64 },
+        "tableNumber": { "type": "string", "maxLength": 20 },
+        "type": { "type": "string", "enum": ["call_waiter", "bill_requested"] },
+        "reason": { "type": "string", "maxLength": 200 },
+        "paymentMethod": { "type": "string", "maxLength": 50 },
+        "status": { "type": "string", "enum": ["pending", "attended"] },
+        "createdAt": { "type": "string", "maxLength": 64 },
+        "attendedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["tableNumber", "type", "status"]
+    },
+    "StaffMember": {
+      "title": "StaffMember",
+      "description": "Registered staff user (waiter, cook, manager)",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 64 },
+        "name": { "type": "string", "maxLength": 100 },
+        "role": { "type": "string", "enum": ["admin", "waiter", "cook"] },
+        "email": { "type": "string", "maxLength": 120 },
+        "pin": { "type": "string", "maxLength": 20 },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["name", "role"]
+    }
+  },
+  "firestore": {
+    "/restaurant_config/{configId}": {
+      "schema": { "$ref": "RestaurantConfig" },
+      "description": "Establishment settings and branding"
+    },
+    "/categories/{categoryId}": {
+      "schema": { "$ref": "Category" },
+      "description": "Menu categories"
+    },
+    "/menu_items/{menuItemId}": {
+      "schema": { "$ref": "MenuItem" },
+      "description": "Menu dishes and drinks"
+    },
+    "/tables/{tableId}": {
+      "schema": { "$ref": "Table" },
+      "description": "Tables and live status"
+    },
+    "/orders/{orderId}": {
+      "schema": { "$ref": "Order" },
+      "description": "Orders in preparation, ready, or completed"
+    },
+    "/service_calls/{callId}": {
+      "schema": { "$ref": "ServiceCall" },
+      "description": "Calls for waiter assistance or bill"
+    },
+    "/staff/{staffId}": {
+      "schema": { "$ref": "StaffMember" },
+      "description": "Staff roster and access credentials"
+    }
+  }
+}

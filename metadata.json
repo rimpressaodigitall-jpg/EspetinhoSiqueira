@@ -1,0 +1,6 @@
+{
+  "name": "ComandaSmart - Sistema Completo de Restaurante & KDS",
+  "description": "Sistema completo para restaurantes com cardápio digital via QR Code de mesa, KDS para cozinha, terminal de garçom/salão e painel administrativo com relatórios e personalização.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

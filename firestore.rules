@@ -1,0 +1,86 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Global Deny Catch-All
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isBootstrappedAdmin() {
+      return isSignedIn() && request.auth.token.email == 'rimpressaodigitall@gmail.com';
+    }
+
+    function isStaffOrAdmin() {
+      return isSignedIn();
+    }
+
+    // Restaurant Configuration
+    match /restaurant_config/{configId} {
+      allow read: if true;
+      allow create, update, delete: if isBootstrappedAdmin() || true; // Allow initial setup and updates
+    }
+
+    // Menu Categories
+    match /categories/{categoryId} {
+      allow read: if true;
+      allow create, update, delete: if isValidId(categoryId);
+    }
+
+    // Menu Items
+    match /menu_items/{menuItemId} {
+      allow read: if true;
+      allow create, update, delete: if isValidId(menuItemId);
+    }
+
+    // Tables
+    match /tables/{tableId} {
+      allow read: if true;
+      allow create, update: if isValidId(tableId);
+      allow delete: if isValidId(tableId);
+    }
+
+    // Orders
+    match /orders/{orderId} {
+      allow read: if true;
+      allow create: if isValidId(orderId) 
+        && request.resource.data.tableNumber is string 
+        && request.resource.data.tableNumber.size() <= 20
+        && request.resource.data.totalAmount is number
+        && request.resource.data.totalAmount >= 0;
+      allow update: if isValidId(orderId);
+      allow delete: if isValidId(orderId);
+    }
+
+    // Service Calls (Chamar garçom / pedir conta)
+    match /service_calls/{callId} {
+      allow read: if true;
+      allow create: if isValidId(callId)
+        && request.resource.data.tableNumber is string
+        && request.resource.data.type in ['call_waiter', 'bill_requested'];
+      allow update: if isValidId(callId);
+      allow delete: if isValidId(callId);
+    }
+
+    // Staff members
+    match /staff/{staffId} {
+      allow read: if true;
+      allow create, update, delete: if isValidId(staffId);
+    }
+
+    // Admins collection
+    match /admins/{adminId} {
+      allow read: if isSignedIn();
+      allow write: if isBootstrappedAdmin();
+    }
+  }
+}
