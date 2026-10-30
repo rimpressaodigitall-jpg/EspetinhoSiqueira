@@ -51,8 +51,16 @@ import {
   Smartphone,
   Globe,
   ArrowRight,
-  HelpCircle
+  HelpCircle,
+  ChefHat,
+  Shield,
+  KeyRound,
+  UserCheck,
+  UserX,
+  Camera
 } from 'lucide-react';
+import { ImageUploadCapture } from '../components/ImageUploadCapture';
+import { AIMenuExtractorModal } from '../components/AIMenuExtractorModal';
 
 interface AdminAppProps {
   config: RestaurantConfig | null;
@@ -127,6 +135,16 @@ export const AdminApp: React.FC<AdminAppProps> = ({
   const [tableModalOpen, setTableModalOpen] = useState<boolean>(false);
   const [printableTable, setPrintableTable] = useState<Table | null>(null);
   const [qrCodesMap, setQrCodesMap] = useState<Record<string, string>>({});
+
+  // --- Staff Management State ---
+  const [editingStaff, setEditingStaff] = useState<Partial<StaffMember> | null>(null);
+  const [staffModalOpen, setStaffModalOpen] = useState<boolean>(false);
+  const [deletingStaffId, setDeletingStaffId] = useState<string | null>(null);
+  const [savingStaff, setSavingStaff] = useState<boolean>(false);
+  const [staffRoleFilter, setStaffRoleFilter] = useState<string>('all');
+
+  // --- AI Menu Extractor State ---
+  const [aiExtractorOpen, setAiExtractorOpen] = useState<boolean>(false);
 
   // Generate QR codes for all tables using the resolved public URL
   useEffect(() => {
@@ -333,6 +351,57 @@ export const AdminApp: React.FC<AdminAppProps> = ({
     setTimeout(() => {
       window.print();
     }, 400);
+  };
+
+  // --- Handlers: Staff CRUD ---
+  const handleSaveStaff = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingStaff?.name || !editingStaff?.role) return;
+
+    setSavingStaff(true);
+    try {
+      const staffId = editingStaff.id || `staff_${Date.now()}`;
+      const payload: StaffMember = {
+        id: staffId,
+        name: editingStaff.name.trim(),
+        role: editingStaff.role,
+        email: editingStaff.email?.trim() || '',
+        pin: editingStaff.pin?.trim() || '',
+        active: editingStaff.active ?? true,
+        createdAt: editingStaff.createdAt || new Date().toISOString(),
+      };
+
+      await setDoc(doc(db, 'staff', staffId), payload);
+      setStaffModalOpen(false);
+      setEditingStaff(null);
+      setSaveSuccessMsg('Funcionário salvo com sucesso no Firebase!');
+      setTimeout(() => setSaveSuccessMsg(null), 3000);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, 'staff');
+    } finally {
+      setSavingStaff(false);
+    }
+  };
+
+  const handleDeleteStaff = async (id: string) => {
+    try {
+      await deleteDoc(doc(db, 'staff', id));
+      setDeletingStaffId(null);
+      setSaveSuccessMsg('Funcionário removido com sucesso!');
+      setTimeout(() => setSaveSuccessMsg(null), 3000);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, `staff/${id}`);
+    }
+  };
+
+  const handleToggleStaffActive = async (member: StaffMember) => {
+    try {
+      await updateDoc(doc(db, 'staff', member.id), {
+        active: !member.active,
+      });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, `staff/${member.id}`);
+    }
   };
 
   return (
@@ -571,27 +640,15 @@ export const AdminApp: React.FC<AdminAppProps> = ({
               </div>
             </div>
 
-            {/* Logo URL with Live Preview */}
-            <div className="space-y-2">
-              <label className="text-xs font-bold text-stone-300 block">
-                URL da Logomarca (ou imagem de perfil)
-              </label>
-              <div className="flex gap-3 items-center">
-                <div className="w-14 h-14 rounded-xl bg-stone-950 border border-stone-800 overflow-hidden shrink-0 flex items-center justify-center">
-                  {brandForm.logoUrl ? (
-                    <img src={brandForm.logoUrl} alt="Logo" className="w-full h-full object-cover" />
-                  ) : (
-                    <ImageIcon className="w-6 h-6 text-stone-700" />
-                  )}
-                </div>
-                <input
-                  type="url"
-                  value={brandForm.logoUrl}
-                  onChange={(e) => setBrandForm({ ...brandForm, logoUrl: e.target.value })}
-                  placeholder="https://images.unsplash.com/photo-..."
-                  className="flex-1 bg-stone-950 border border-stone-800 rounded-xl p-2.5 text-xs text-stone-200 focus:outline-none focus:border-amber-500"
-                />
-              </div>
+            {/* Logo / Foto do Estabelecimento com Câmera e Upload */}
+            <div>
+              <ImageUploadCapture
+                label="Logomarca do Estabelecimento (ou Foto da Fachada)"
+                value={brandForm.logoUrl}
+                onChange={(url) => setBrandForm({ ...brandForm, logoUrl: url })}
+                aspectRatio="square"
+                helperText="Tire uma foto do logo ou fachada com a câmera do celular, escolha da galeria ou informe uma URL externa."
+              />
             </div>
 
             {/* Address & Phone */}
@@ -967,32 +1024,46 @@ export const AdminApp: React.FC<AdminAppProps> = ({
             </div>
           </div>
 
-          {/* Dishes Header & Add Button */}
-          <div className="flex items-center justify-between">
+          {/* Dishes Header & Add Buttons */}
+          <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <h3 className="text-base font-bold text-white">Pratos & Bebidas Cadastrados</h3>
               <p className="text-xs text-stone-400">Total de {menuItems.length} itens no cardápio</p>
             </div>
 
-            <button
-              onClick={() => {
-                setEditingItem({
-                  categoryId: categories[0]?.id || '',
-                  name: '',
-                  description: '',
-                  price: 0,
-                  imageUrl: '',
-                  available: true,
-                  prepTimeMinutes: 15,
-                  featured: false,
-                });
-                setItemModalOpen(true);
-              }}
-              className="py-2.5 px-4 bg-amber-500 hover:bg-amber-400 text-stone-950 font-black text-xs rounded-xl shadow-lg flex items-center gap-2 transition cursor-pointer"
-            >
-              <Plus className="w-4 h-4" />
-              <span>Adicionar Novo Prato</span>
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              {/* Botão de Copiar Cardápio com IA */}
+              <button
+                type="button"
+                onClick={() => setAiExtractorOpen(true)}
+                className="py-2.5 px-3.5 bg-gradient-to-r from-purple-900/60 via-amber-900/40 to-amber-600/30 hover:from-purple-800/80 hover:to-amber-500/50 text-amber-300 border border-amber-500/40 font-bold text-xs rounded-xl shadow-lg flex items-center gap-2 transition cursor-pointer active:scale-95"
+                title="Tire uma foto de um cardápio impresso ou lousa e a IA cadastra todos os pratos automaticamente"
+              >
+                <Sparkles className="w-4 h-4 text-amber-400 animate-pulse" />
+                <span>Copiar Cardápio de Foto (IA)</span>
+              </button>
+
+              {/* Botão Adicionar Prato Manual */}
+              <button
+                onClick={() => {
+                  setEditingItem({
+                    categoryId: categories[0]?.id || '',
+                    name: '',
+                    description: '',
+                    price: 0,
+                    imageUrl: '',
+                    available: true,
+                    prepTimeMinutes: 15,
+                    featured: false,
+                  });
+                  setItemModalOpen(true);
+                }}
+                className="py-2.5 px-4 bg-amber-500 hover:bg-amber-400 text-stone-950 font-black text-xs rounded-xl shadow-lg flex items-center gap-2 transition cursor-pointer"
+              >
+                <Plus className="w-4 h-4" />
+                <span>Adicionar Prato</span>
+              </button>
+            </div>
           </div>
 
           {/* Menu Items Grid */}
@@ -1311,35 +1382,266 @@ export const AdminApp: React.FC<AdminAppProps> = ({
         </div>
       )}
 
-      {/* TAB 5: EQUIPE & USUÁRIOS */}
+      {/* TAB 5: EQUIPE & USUÁRIOS (ADMIN ACESSO TOTAL: CRIAR, EDITAR, EXCLUIR) */}
       {activeTab === 'staff' && (
-        <div className="max-w-3xl space-y-4 animate-fadeIn">
-          <div className="bg-stone-900 border border-stone-800 p-5 rounded-2xl shadow-lg flex items-center justify-between">
-            <div>
-              <h3 className="font-bold text-base text-white">Equipe & Funcionários Cadastrados</h3>
-              <p className="text-xs text-stone-400">Garçons, cozinheiros e perfis administrativos</p>
+        <div className="max-w-4xl space-y-6 animate-fadeIn">
+          {/* Header Card */}
+          <div className="bg-stone-900 border border-stone-800 p-6 rounded-3xl shadow-xl space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className="w-12 h-12 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400">
+                  <Users className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-lg text-white flex items-center gap-2">
+                    <span>Gestão de Equipe & Acessos</span>
+                    <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                      {staff.length} Membros
+                    </span>
+                  </h3>
+                  <p className="text-xs text-stone-400 mt-0.5">
+                    Cadastre, edite e controle garçons, cozinheiros e administradores com PIN rápido e perfis
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setEditingStaff({
+                    name: '',
+                    role: 'waiter',
+                    email: '',
+                    pin: '',
+                    active: true,
+                  });
+                  setStaffModalOpen(true);
+                }}
+                className="py-2.5 px-4 bg-amber-500 hover:bg-amber-400 text-stone-950 font-black text-xs rounded-xl shadow-lg flex items-center gap-2 transition cursor-pointer active:scale-95"
+              >
+                <Plus className="w-4 h-4" />
+                <span>Cadastrar Funcionário</span>
+              </button>
+            </div>
+
+            {/* Quick Stats Badges */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-2">
+              <div className="bg-stone-950 p-3 rounded-2xl border border-stone-850">
+                <span className="text-[10px] text-stone-500 uppercase font-bold block">Total Equipe</span>
+                <span className="text-xl font-black text-white">{staff.length}</span>
+              </div>
+
+              <div className="bg-stone-950 p-3 rounded-2xl border border-stone-850">
+                <span className="text-[10px] text-amber-400 uppercase font-bold block">Garçons (Salão)</span>
+                <span className="text-xl font-black text-amber-400">
+                  {staff.filter((s) => s.role === 'waiter').length}
+                </span>
+              </div>
+
+              <div className="bg-stone-950 p-3 rounded-2xl border border-stone-850">
+                <span className="text-[10px] text-blue-400 uppercase font-bold block">Cozinha (KDS)</span>
+                <span className="text-xl font-black text-blue-400">
+                  {staff.filter((s) => s.role === 'cook').length}
+                </span>
+              </div>
+
+              <div className="bg-stone-950 p-3 rounded-2xl border border-stone-850">
+                <span className="text-[10px] text-purple-400 uppercase font-bold block">Administradores</span>
+                <span className="text-xl font-black text-purple-400">
+                  {staff.filter((s) => s.role === 'admin').length}
+                </span>
+              </div>
             </div>
           </div>
 
-          <div className="space-y-2">
-            {staff.map((s) => (
-              <div
-                key={s.id}
-                className="bg-stone-900 border border-stone-800 p-4 rounded-xl flex items-center justify-between text-xs"
+          {/* Role Filter Tabs */}
+          <div className="flex gap-2 overflow-x-auto pb-1">
+            {[
+              { id: 'all', label: 'Todos os Funcionários', count: staff.length },
+              { id: 'waiter', label: 'Garçons (Salão)', count: staff.filter((s) => s.role === 'waiter').length },
+              { id: 'cook', label: 'Cozinha (KDS)', count: staff.filter((s) => s.role === 'cook').length },
+              { id: 'admin', label: 'Administradores', count: staff.filter((s) => s.role === 'admin').length },
+            ].map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setStaffRoleFilter(tab.id)}
+                className={`py-2 px-3.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 shrink-0 ${
+                  staffRoleFilter === tab.id
+                    ? 'bg-amber-500 text-stone-950 shadow-md'
+                    : 'bg-stone-900 text-stone-400 hover:text-white border border-stone-800'
+                }`}
               >
-                <div>
-                  <h4 className="font-bold text-white text-sm">{s.name}</h4>
-                  <div className="flex items-center gap-2 mt-0.5 text-stone-400">
-                    <span className="capitalize font-semibold text-amber-400">Função: {s.role}</span>
-                    {s.email && <span>• {s.email}</span>}
-                    {s.pin && <span>• PIN: ****</span>}
-                  </div>
-                </div>
-                <span className="px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[10px] font-bold">
-                  Ativo
+                <span>{tab.label}</span>
+                <span
+                  className={`text-[10px] px-1.5 py-0.2 rounded-full font-black ${
+                    staffRoleFilter === tab.id
+                      ? 'bg-stone-950/20 text-stone-950'
+                      : 'bg-stone-800 text-stone-300'
+                  }`}
+                >
+                  {tab.count}
                 </span>
-              </div>
+              </button>
             ))}
+          </div>
+
+          {/* Staff Cards List */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {staff
+              .filter((s) => staffRoleFilter === 'all' || s.role === staffRoleFilter)
+              .map((member) => {
+                const isWait = member.role === 'waiter';
+                const isCook = member.role === 'cook';
+                const isAdmin = member.role === 'admin';
+
+                return (
+                  <div
+                    key={member.id}
+                    className="bg-stone-900 border border-stone-800 rounded-3xl p-5 shadow-xl flex flex-col justify-between hover:border-stone-700 transition space-y-4"
+                  >
+                    <div>
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="flex items-center gap-3">
+                          <div
+                            className={`w-12 h-12 rounded-2xl flex items-center justify-center font-black text-base shrink-0 shadow-inner ${
+                              isAdmin
+                                ? 'bg-purple-500/15 text-purple-400 border border-purple-500/30'
+                                : isCook
+                                ? 'bg-blue-500/15 text-blue-400 border border-blue-500/30'
+                                : 'bg-amber-500/15 text-amber-400 border border-amber-500/30'
+                            }`}
+                          >
+                            {isAdmin ? (
+                              <Shield className="w-5 h-5" />
+                            ) : isCook ? (
+                              <ChefHat className="w-5 h-5" />
+                            ) : (
+                              <Users className="w-5 h-5" />
+                            )}
+                          </div>
+
+                          <div>
+                            <h4 className="font-bold text-white text-base leading-tight">
+                              {member.name}
+                            </h4>
+                            <span
+                              className={`inline-block mt-1 text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full border ${
+                                isAdmin
+                                  ? 'bg-purple-500/10 text-purple-300 border-purple-500/30'
+                                  : isCook
+                                  ? 'bg-blue-500/10 text-blue-300 border-blue-500/30'
+                                  : 'bg-amber-500/10 text-amber-300 border-amber-500/30'
+                              }`}
+                            >
+                              {isAdmin
+                                ? 'Administrador Geral'
+                                : isCook
+                                ? 'Cozinha / KDS'
+                                : 'Garçom de Salão'}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Status Toggle Button */}
+                        <button
+                          type="button"
+                          onClick={() => handleToggleStaffActive(member)}
+                          className={`px-2.5 py-1 rounded-full text-[10px] font-bold border transition cursor-pointer flex items-center gap-1 ${
+                            member.active
+                              ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/20'
+                              : 'bg-stone-800 text-stone-500 border-stone-700 hover:text-stone-300'
+                          }`}
+                          title="Clique para alternar o status ativo/inativo"
+                        >
+                          <span
+                            className={`w-1.5 h-1.5 rounded-full ${
+                              member.active ? 'bg-emerald-400 animate-pulse' : 'bg-stone-600'
+                            }`}
+                          />
+                          <span>{member.active ? 'Ativo' : 'Inativo'}</span>
+                        </button>
+                      </div>
+
+                      {/* Details row: Email & PIN */}
+                      <div className="grid grid-cols-2 gap-2 mt-4 pt-3 border-t border-stone-850 text-xs">
+                        <div className="bg-stone-950 p-2.5 rounded-xl border border-stone-850/80">
+                          <span className="text-[10px] text-stone-500 block">Identificação / Email:</span>
+                          <span className="text-stone-300 font-mono text-[11px] truncate block" title={member.email || 'Não informado'}>
+                            {member.email || 'Sem email'}
+                          </span>
+                        </div>
+
+                        <div className="bg-stone-950 p-2.5 rounded-xl border border-stone-850/80">
+                          <span className="text-[10px] text-stone-500 block">Código PIN Rápido:</span>
+                          <span className="text-amber-400 font-mono text-xs font-bold flex items-center gap-1">
+                            <KeyRound className="w-3 h-3 text-amber-500/70" />
+                            <span>{member.pin ? member.pin : 'Sem PIN'}</span>
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Action Buttons: Edit & Delete */}
+                    <div className="pt-2 border-t border-stone-800 flex items-center justify-between gap-2">
+                      <span className="text-[10px] text-stone-500">
+                        {member.createdAt
+                          ? `Desde ${new Date(member.createdAt).toLocaleDateString()}`
+                          : 'Cadastro ativo'}
+                      </span>
+
+                      <div className="flex items-center gap-2">
+                        {/* Edit Button */}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingStaff(member);
+                            setStaffModalOpen(true);
+                          }}
+                          className="py-1.5 px-3 bg-stone-800 hover:bg-stone-750 text-amber-300 hover:text-amber-200 border border-stone-700 text-xs font-bold rounded-xl flex items-center gap-1 transition cursor-pointer"
+                        >
+                          <Edit3 className="w-3.5 h-3.5" />
+                          <span>Editar</span>
+                        </button>
+
+                        {/* Delete Button */}
+                        <button
+                          type="button"
+                          onClick={() => setDeletingStaffId(member.id)}
+                          className="py-1.5 px-3 bg-stone-950 hover:bg-red-500/10 text-stone-400 hover:text-red-400 border border-stone-800 hover:border-red-500/30 text-xs font-bold rounded-xl flex items-center gap-1 transition cursor-pointer"
+                          title="Excluir este funcionário"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          <span>Excluir</span>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+
+            {staff.filter((s) => staffRoleFilter === 'all' || s.role === staffRoleFilter).length === 0 && (
+              <div className="col-span-full bg-stone-900 border border-stone-800 rounded-3xl p-8 text-center space-y-3">
+                <Users className="w-8 h-8 mx-auto text-stone-600" />
+                <p className="text-xs text-stone-400">Nenhum funcionário encontrado neste filtro.</p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditingStaff({
+                      name: '',
+                      role: 'waiter',
+                      email: '',
+                      pin: '',
+                      active: true,
+                    });
+                    setStaffModalOpen(true);
+                  }}
+                  className="py-2 px-4 bg-amber-500 text-stone-950 font-bold text-xs rounded-xl"
+                >
+                  Cadastrar Agora
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -1578,16 +1880,13 @@ export const AdminApp: React.FC<AdminAppProps> = ({
                 />
               </div>
 
-              <div>
-                <label className="text-xs font-bold text-stone-300 block mb-1">URL da Imagem / Foto</label>
-                <input
-                  type="url"
-                  value={editingItem.imageUrl || ''}
-                  onChange={(e) => setEditingItem({ ...editingItem, imageUrl: e.target.value })}
-                  placeholder="https://images.unsplash.com/..."
-                  className="w-full bg-stone-950 border border-stone-800 rounded-xl p-2.5 text-xs text-stone-200 focus:outline-none focus:border-amber-500"
-                />
-              </div>
+              <ImageUploadCapture
+                label="Foto do Prato / Bebida"
+                value={editingItem.imageUrl || ''}
+                onChange={(url) => setEditingItem({ ...editingItem, imageUrl: url })}
+                aspectRatio="square"
+                helperText="Tire uma foto do prato na hora com a câmera do celular, escolha da galeria ou insira uma URL."
+              />
 
               <div className="grid grid-cols-2 gap-3 pt-2">
                 <div>
@@ -1840,6 +2139,173 @@ export const AdminApp: React.FC<AdminAppProps> = ({
           </div>
         </div>
       )}
+
+      {/* MODAL: CADASTRAR / EDITAR FUNCIONÁRIO (ACESSO TOTAL DO ADMIN) */}
+      {staffModalOpen && editingStaff && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 animate-fadeIn">
+          <div className="bg-stone-900 border border-stone-800 w-full max-w-md rounded-3xl p-6 space-y-4 shadow-2xl">
+            <div className="flex items-center justify-between pb-3 border-b border-stone-800">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400">
+                  <Users className="w-4 h-4" />
+                </div>
+                <h3 className="font-bold text-base text-white">
+                  {editingStaff.id ? 'Editar Funcionário' : 'Novo Membro da Equipe'}
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setStaffModalOpen(false);
+                  setEditingStaff(null);
+                }}
+                className="text-stone-400 hover:text-white"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveStaff} className="space-y-3.5">
+              <div>
+                <label className="text-xs font-bold text-stone-300 block mb-1">
+                  Nome Completo *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={editingStaff.name || ''}
+                  onChange={(e) => setEditingStaff({ ...editingStaff, name: e.target.value })}
+                  placeholder="Ex: Carlos Oliveira"
+                  className="w-full bg-stone-950 border border-stone-800 rounded-xl p-2.5 text-xs text-stone-200 focus:outline-none focus:border-amber-500"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs font-bold text-stone-300 block mb-1">
+                  Cargo / Função no Restaurante *
+                </label>
+                <select
+                  required
+                  value={editingStaff.role || 'waiter'}
+                  onChange={(e) => setEditingStaff({ ...editingStaff, role: e.target.value as any })}
+                  className="w-full bg-stone-950 border border-stone-800 rounded-xl p-2.5 text-xs text-stone-200 focus:outline-none focus:border-amber-500"
+                >
+                  <option value="waiter">Garçom / Atendente de Salão (Notificações de mesa e pratos prontos)</option>
+                  <option value="cook">Cozinheiro / KDS (Controle de pedidos e preparo na cozinha)</option>
+                  <option value="admin">Administrador Geral (Acesso total às configurações e relatórios)</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="text-xs font-bold text-stone-300 block mb-1">
+                  Email ou Identificador
+                </label>
+                <input
+                  type="text"
+                  value={editingStaff.email || ''}
+                  onChange={(e) => setEditingStaff({ ...editingStaff, email: e.target.value })}
+                  placeholder="exemplo@restaurante.com.br"
+                  className="w-full bg-stone-950 border border-stone-800 rounded-xl p-2.5 text-xs text-stone-200 focus:outline-none focus:border-amber-500"
+                />
+                <span className="text-[10px] text-stone-500 block mt-0.5">
+                  Utilizado para login com Google ou identificação nos relatórios.
+                </span>
+              </div>
+
+              <div>
+                <label className="text-xs font-bold text-stone-300 block mb-1">
+                  Código PIN Rápido (4 Dígitos)
+                </label>
+                <input
+                  type="text"
+                  maxLength={6}
+                  value={editingStaff.pin || ''}
+                  onChange={(e) => setEditingStaff({ ...editingStaff, pin: e.target.value })}
+                  placeholder="Ex: 1234"
+                  className="w-full bg-stone-950 border border-stone-800 rounded-xl p-2.5 text-xs font-mono text-amber-300 focus:outline-none focus:border-amber-500"
+                />
+                <span className="text-[10px] text-stone-500 block mt-0.5">
+                  Facilita o acesso rápido em maquininhas Smart POS ou tablets sem precisar digitar senha longa.
+                </span>
+              </div>
+
+              <div className="pt-2">
+                <label className="flex items-center gap-2 text-xs font-semibold text-stone-300 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={editingStaff.active ?? true}
+                    onChange={(e) => setEditingStaff({ ...editingStaff, active: e.target.checked })}
+                    className="accent-amber-500 rounded"
+                  />
+                  <span>Funcionário Ativo (pode acessar o sistema)</span>
+                </label>
+              </div>
+
+              <div className="flex gap-2 pt-3 border-t border-stone-800">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setStaffModalOpen(false);
+                    setEditingStaff(null);
+                  }}
+                  className="flex-1 py-2.5 bg-stone-800 hover:bg-stone-750 text-stone-300 text-xs font-bold rounded-xl transition cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingStaff}
+                  className="flex-1 py-2.5 bg-amber-500 hover:bg-amber-400 text-stone-950 text-xs font-black rounded-xl shadow-lg transition cursor-pointer active:scale-95 disabled:opacity-50"
+                >
+                  {savingStaff ? 'Salvando...' : 'Salvar Funcionário'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: CONFIRMAÇÃO DE EXCLUSÃO DE FUNCIONÁRIO */}
+      {deletingStaffId && (
+        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4 animate-fadeIn">
+          <div className="bg-stone-900 border border-stone-800 w-full max-w-sm rounded-3xl p-6 text-center space-y-4 shadow-2xl">
+            <div className="w-12 h-12 rounded-2xl bg-red-500/10 border border-red-500/30 flex items-center justify-center text-red-400 mx-auto">
+              <Trash2 className="w-6 h-6" />
+            </div>
+
+            <div>
+              <h4 className="text-base font-bold text-white">Excluir Funcionário?</h4>
+              <p className="text-xs text-stone-400 mt-1">
+                Esta ação removerá o membro da equipe do sistema permanentemente no Firebase.
+              </p>
+            </div>
+
+            <div className="flex gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setDeletingStaffId(null)}
+                className="flex-1 py-2.5 bg-stone-800 hover:bg-stone-750 text-stone-300 text-xs font-bold rounded-xl transition cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => handleDeleteStaff(deletingStaffId)}
+                className="flex-1 py-2.5 bg-red-500 hover:bg-red-600 text-white text-xs font-black rounded-xl shadow-lg transition cursor-pointer active:scale-95"
+              >
+                Confirmar Exclusão
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: EXTRAÇÃO DE CARDÁPIO DE FOTO COM IA (GEMINI 3.8 FLASH) */}
+      <AIMenuExtractorModal
+        isOpen={aiExtractorOpen}
+        onClose={() => setAiExtractorOpen(false)}
+        existingCategories={categories}
+      />
     </div>
   );
 };
