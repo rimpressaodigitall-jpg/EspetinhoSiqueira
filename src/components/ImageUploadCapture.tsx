@@ -14,7 +14,7 @@ interface ImageUploadCaptureProps {
 /**
  * Compresses an image file or bitmap to a lightweight data URL
  */
-async function compressImage(file: File, maxDim = 850, quality = 0.82): Promise<string> {
+export async function compressImage(file: File, maxDim = 850, quality = 0.82): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = (e) => {

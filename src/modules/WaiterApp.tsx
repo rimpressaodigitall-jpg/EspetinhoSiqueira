@@ -30,8 +30,10 @@ import {
   QrCode, 
   UtensilsCrossed, 
   AlertCircle,
-  Sparkles
+  Sparkles,
+  Printer
 } from 'lucide-react';
+import { printTableBill } from '../utils/printer';
 
 interface WaiterAppProps {
   tables: Table[];
@@ -116,6 +118,38 @@ export const WaiterApp: React.FC<WaiterAppProps> = ({
   // Change calculation for cash payment
   const cashGivenNum = parseFloat(cashGiven.replace(',', '.')) || 0;
   const changeDue = cashGivenNum > tableTotal ? cashGivenNum - tableTotal : 0;
+
+  // Print Handlers
+  const handlePrintConference = () => {
+    if (!selectedTable) return;
+    printTableBill({
+      tableNumber: selectedTable.tableNumber,
+      items: selectedTableItems,
+      subtotal: tableSubtotal,
+      serviceFee,
+      serviceTaxPercent: config?.serviceTaxPercent || 10,
+      total: tableTotal,
+      type: 'conference',
+      config,
+    });
+  };
+
+  const handlePrintReceipt = () => {
+    if (!selectedTable) return;
+    printTableBill({
+      tableNumber: selectedTable.tableNumber,
+      items: selectedTableItems,
+      subtotal: tableSubtotal,
+      serviceFee,
+      serviceTaxPercent: config?.serviceTaxPercent || 10,
+      total: tableTotal,
+      paymentMethod: checkoutPaymentMethod,
+      cashGiven: cashGivenNum > 0 ? cashGivenNum : undefined,
+      changeDue: changeDue > 0 ? changeDue : undefined,
+      type: 'receipt',
+      config,
+    });
+  };
 
   // Actions
   const handleAttendCall = async (callId: string, tableNumber: string) => {
@@ -556,12 +590,22 @@ export const WaiterApp: React.FC<WaiterAppProps> = ({
 
               <div className="flex gap-2">
                 <button
+                  type="button"
+                  disabled={selectedTableItems.length === 0}
+                  onClick={handlePrintConference}
+                  className="py-3 px-3.5 bg-stone-850 hover:bg-stone-800 text-amber-300 border border-stone-700 font-bold text-xs rounded-xl transition flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-40"
+                  title="Imprimir extrato de conferência para o cliente na mesa"
+                >
+                  <Printer className="w-4 h-4 text-amber-400" />
+                  <span>Imprimir Conta</span>
+                </button>
+                <button
                   disabled={selectedTableItems.length === 0}
                   onClick={() => setShowCheckoutModal(true)}
                   className="flex-1 py-3 px-4 bg-emerald-500 hover:bg-emerald-400 disabled:opacity-40 text-stone-950 font-black text-sm rounded-xl transition shadow-lg flex items-center justify-center gap-2 cursor-pointer"
                 >
                   <Receipt className="w-4 h-4" />
-                  <span>Fechar Conta & Liberar Mesa</span>
+                  <span>Fechar Conta</span>
                 </button>
               </div>
             </div>
@@ -730,16 +774,27 @@ export const WaiterApp: React.FC<WaiterAppProps> = ({
             {/* Action Buttons */}
             <div className="flex gap-2 pt-2">
               <button
+                type="button"
                 onClick={() => setShowCheckoutModal(false)}
-                className="flex-1 py-3 bg-stone-800 text-stone-300 rounded-xl text-xs font-semibold"
+                className="py-3 px-3 bg-stone-800 hover:bg-stone-750 text-stone-300 rounded-xl text-xs font-semibold cursor-pointer"
               >
                 Voltar
               </button>
               <button
-                onClick={handleFinalizeBillAndClearTable}
-                className="flex-1 py-3 bg-emerald-500 hover:bg-emerald-400 text-stone-950 rounded-xl text-xs font-black shadow-lg"
+                type="button"
+                onClick={handlePrintReceipt}
+                className="py-3 px-3 bg-stone-800 hover:bg-stone-750 text-amber-300 border border-stone-700 font-bold text-xs rounded-xl flex items-center justify-center gap-1.5 transition cursor-pointer"
+                title="Imprimir comprovante fiscal/recibo da mesa"
               >
-                Confirmar & Liberar Mesa
+                <Printer className="w-4 h-4 text-amber-400" />
+                <span>Imprimir Recibo</span>
+              </button>
+              <button
+                type="button"
+                onClick={handleFinalizeBillAndClearTable}
+                className="flex-1 py-3 bg-emerald-500 hover:bg-emerald-400 text-stone-950 rounded-xl text-xs font-black shadow-lg cursor-pointer"
+              >
+                Confirmar & Liberar
               </button>
             </div>
           </div>

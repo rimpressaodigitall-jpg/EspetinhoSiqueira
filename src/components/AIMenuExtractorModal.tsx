@@ -11,13 +11,16 @@ import {
   Plus, 
   Trash2, 
   RefreshCw,
+  RotateCw,
   UtensilsCrossed,
   DollarSign,
-  Clock
+  Clock,
+  Image as ImageIcon
 } from 'lucide-react';
 import { Category, MenuItem } from '../types';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
 import { collection, doc, setDoc } from 'firebase/firestore';
+import { compressImage } from './ImageUploadCapture';
 
 interface AIMenuExtractorModalProps {
   isOpen: boolean;
@@ -33,6 +36,7 @@ interface ExtractedItem {
   price: number;
   category: string;
   prepTimeMinutes: number;
+  imageUrl?: string;
   selected: boolean;
 }
 
@@ -55,15 +59,22 @@ export const AIMenuExtractorModal: React.FC<AIMenuExtractorModalProps> = ({
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const cameraInputRef = React.useRef<HTMLInputElement>(null);
 
+  // References and states for individual item photo selection (local files & mobile camera)
+  const itemFileInputRef = React.useRef<HTMLInputElement>(null);
+  const itemCameraInputRef = React.useRef<HTMLInputElement>(null);
+  const [activePhotoItemId, setActivePhotoItemId] = useState<string | null>(null);
+  const [compressingItemId, setCompressingItemId] = useState<string | null>(null);
+  const [editingUrlItemId, setEditingUrlItemId] = useState<string | null>(null);
+
   if (!isOpen) return null;
 
-  // Compress image to fast base64
+  // Compress image to fast base64 with high OCR resolution
   const processImageFile = (file: File) => {
     const reader = new FileReader();
     reader.onload = (e) => {
       const img = new Image();
       img.onload = () => {
-        const maxDim = 1200; // Good resolution for OCR and text reading
+        const maxDim = 1600; // Crisp resolution for small print, multi-column and price OCR
         let width = img.width;
         let height = img.height;
 
@@ -83,7 +94,7 @@ export const AIMenuExtractorModal: React.FC<AIMenuExtractorModalProps> = ({
         const ctx = canvas.getContext('2d');
         if (ctx) {
           ctx.drawImage(img, 0, 0, width, height);
-          const dataUrl = canvas.toDataURL('image/jpeg', 0.88);
+          const dataUrl = canvas.toDataURL('image/jpeg', 0.90);
           setPhotoBase64(dataUrl);
           setErrorMsg(null);
         }
@@ -91,6 +102,26 @@ export const AIMenuExtractorModal: React.FC<AIMenuExtractorModalProps> = ({
       img.src = e.target?.result as string;
     };
     reader.readAsDataURL(file);
+  };
+
+  // Rotate photo 90 degrees clockwise (useful for mobile photos taken sideways)
+  const rotatePhoto90 = () => {
+    if (!photoBase64) return;
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = img.height;
+      canvas.height = img.width;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.translate(canvas.width / 2, canvas.height / 2);
+        ctx.rotate((90 * Math.PI) / 180);
+        ctx.drawImage(img, -img.width / 2, -img.height / 2);
+        const rotatedUrl = canvas.toDataURL('image/jpeg', 0.90);
+        setPhotoBase64(rotatedUrl);
+      }
+    };
+    img.src = photoBase64;
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -129,24 +160,35 @@ export const AIMenuExtractorModal: React.FC<AIMenuExtractorModalProps> = ({
       }
 
       const data = json.data;
-      const categories: string[] = Array.isArray(data.categories) ? data.categories : [];
+      const categories: string[] = Array.isArray(data.categories) && data.categories.length > 0 
+        ? data.categories 
+        : ['Pratos Principais', 'Bebidas'];
       const rawItems: any[] = Array.isArray(data.items) ? data.items : [];
 
       if (rawItems.length === 0) {
-        throw new Error('Nenhum item de cardápio foi reconhecido nesta foto. Tente uma foto mais aproximada e iluminada.');
+        throw new Error('Nenhum item de cardápio foi reconhecido nesta foto. Verifique se o cardápio está bem iluminado e nítido.');
       }
 
-      const formattedItems: ExtractedItem[] = rawItems.map((item, idx) => ({
-        id: `extracted_${Date.now()}_${idx}`,
-        name: String(item.name || 'Prato sem nome').trim(),
-        description: String(item.description || '').trim(),
-        price: typeof item.price === 'number' && !isNaN(item.price) ? item.price : 0,
-        category: String(item.category || categories[0] || 'Geral').trim(),
-        prepTimeMinutes: typeof item.prepTimeMinutes === 'number' ? item.prepTimeMinutes : 15,
-        selected: true,
-      }));
+      const formattedItems: ExtractedItem[] = rawItems.map((item, idx) => {
+        let priceNum = typeof item.price === 'number' && !isNaN(item.price) ? item.price : 0;
+        if (typeof item.price === 'string') {
+          const cleaned = item.price.replace(/[^0-9,.]/g, '').replace(',', '.');
+          priceNum = parseFloat(cleaned) || 0;
+        }
 
-      setExtractedCategories(categories.length > 0 ? categories : ['Pratos Principais', 'Bebidas']);
+        return {
+          id: `extracted_${Date.now()}_${idx}`,
+          name: String(item.name || 'Prato sem nome').trim(),
+          description: String(item.description || '').trim(),
+          price: Number(priceNum.toFixed(2)),
+          category: String(item.category || categories[0] || 'Pratos Principais').trim(),
+          prepTimeMinutes: typeof item.prepTimeMinutes === 'number' ? item.prepTimeMinutes : 15,
+          imageUrl: item.imageUrl || '',
+          selected: true,
+        };
+      });
+
+      setExtractedCategories(categories);
       setExtractedItems(formattedItems);
       setStep('review');
     } catch (err: any) {
@@ -155,6 +197,20 @@ export const AIMenuExtractorModal: React.FC<AIMenuExtractorModalProps> = ({
     } finally {
       setIsAnalyzing(false);
     }
+  };
+
+  const handleAddNewItem = () => {
+    const newItem: ExtractedItem = {
+      id: `extracted_manual_${Date.now()}`,
+      name: 'Novo Prato / Bebida',
+      description: '',
+      price: 0,
+      category: extractedCategories[0] || 'Pratos Principais',
+      prepTimeMinutes: 15,
+      imageUrl: '',
+      selected: true,
+    };
+    setExtractedItems((prev) => [newItem, ...prev]);
   };
 
   const handleToggleSelectAll = (select: boolean) => {
@@ -169,6 +225,35 @@ export const AIMenuExtractorModal: React.FC<AIMenuExtractorModalProps> = ({
 
   const handleDeleteItem = (id: string) => {
     setExtractedItems((prev) => prev.filter((item) => item.id !== id));
+  };
+
+  // Trigger camera or local gallery selection for an individual item
+  const triggerItemCamera = (itemId: string) => {
+    setActivePhotoItemId(itemId);
+    itemCameraInputRef.current?.click();
+  };
+
+  const triggerItemGallery = (itemId: string) => {
+    setActivePhotoItemId(itemId);
+    itemFileInputRef.current?.click();
+  };
+
+  const handleItemPhotoChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !activePhotoItemId) return;
+
+    const targetId = activePhotoItemId;
+    setCompressingItemId(targetId);
+    try {
+      const dataUrl = await compressImage(file, 850, 0.82);
+      handleUpdateItem(targetId, 'imageUrl', dataUrl);
+    } catch (err) {
+      console.error('Erro ao carregar foto do prato:', err);
+      setErrorMsg('Não foi possível processar a foto do prato.');
+    } finally {
+      setCompressingItemId(null);
+      if (e.target) e.target.value = '';
+    }
   };
 
   // Import into Firestore
@@ -216,7 +301,7 @@ export const AIMenuExtractorModal: React.FC<AIMenuExtractorModalProps> = ({
           name: item.name,
           description: item.description,
           price: item.price,
-          imageUrl: '', // default empty, user can attach photo afterwards
+          imageUrl: item.imageUrl?.trim() || 'https://images.unsplash.com/photo-1544025162-d76694265947?w=600&auto=format&fit=crop&q=80',
           available: true,
           prepTimeMinutes: item.prepTimeMinutes,
           featured: false,
@@ -260,7 +345,7 @@ export const AIMenuExtractorModal: React.FC<AIMenuExtractorModalProps> = ({
               <h3 className="font-black text-base text-white flex items-center gap-2">
                 <span>Copiar Cardápio de Foto com IA</span>
                 <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30">
-                  Gemini 3.8
+                  Google Gemini IA
                 </span>
               </h3>
               <p className="text-xs text-stone-400">
@@ -277,7 +362,7 @@ export const AIMenuExtractorModal: React.FC<AIMenuExtractorModalProps> = ({
           </button>
         </div>
 
-        {/* Hidden inputs for camera & gallery */}
+        {/* Hidden inputs for camera & gallery (menu scan) */}
         <input
           ref={fileInputRef}
           type="file"
@@ -294,12 +379,40 @@ export const AIMenuExtractorModal: React.FC<AIMenuExtractorModalProps> = ({
           className="hidden"
         />
 
+        {/* Hidden inputs for individual item photo selection (local files & mobile camera) */}
+        <input
+          ref={itemFileInputRef}
+          type="file"
+          accept="image/*"
+          onChange={handleItemPhotoChange}
+          className="hidden"
+        />
+        <input
+          ref={itemCameraInputRef}
+          type="file"
+          accept="image/*"
+          capture="environment"
+          onChange={handleItemPhotoChange}
+          className="hidden"
+        />
+
         {/* Content Body */}
         <div className="p-5 overflow-y-auto flex-1 space-y-5">
           {errorMsg && (
-            <div className="p-3 bg-red-500/15 border border-red-500/30 text-red-300 rounded-2xl text-xs flex items-center gap-2">
-              <AlertCircle className="w-4 h-4 shrink-0 text-red-400" />
-              <span>{errorMsg}</span>
+            <div className="p-3 bg-red-500/15 border border-red-500/30 text-red-300 rounded-2xl text-xs flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0 text-red-400" />
+                <span>{errorMsg}</span>
+              </div>
+              {photoBase64 && !isAnalyzing && (
+                <button
+                  type="button"
+                  onClick={handleAnalyzePhoto}
+                  className="px-2.5 py-1 bg-red-500/20 hover:bg-red-500/30 text-red-200 rounded-lg font-bold text-[11px] shrink-0 transition"
+                >
+                  Tentar Novamente
+                </button>
+              )}
             </div>
           )}
 
@@ -316,18 +429,27 @@ export const AIMenuExtractorModal: React.FC<AIMenuExtractorModalProps> = ({
               <div className="border-2 border-dashed border-stone-800 hover:border-amber-500/50 rounded-3xl p-6 text-center transition bg-stone-950/60">
                 {photoBase64 ? (
                   <div className="space-y-4">
-                    <div className="max-h-64 max-w-sm mx-auto overflow-hidden rounded-2xl border border-stone-800 shadow-lg">
+                    <div className="max-h-64 max-w-sm mx-auto overflow-hidden rounded-2xl border border-stone-800 shadow-lg bg-black/40">
                       <img
                         src={photoBase64}
                         alt="Cardápio para análise"
-                        className="w-full h-auto object-contain max-h-64"
+                        className="w-full h-auto object-contain max-h-64 mx-auto"
                       />
                     </div>
-                    <div className="flex justify-center gap-2">
+                    <div className="flex flex-wrap justify-center gap-2">
+                      <button
+                        type="button"
+                        onClick={rotatePhoto90}
+                        className="py-1.5 px-3 bg-stone-800 hover:bg-stone-750 text-stone-200 text-xs font-semibold rounded-xl flex items-center gap-1.5 transition cursor-pointer"
+                        title="Girar foto 90 graus no sentido horário"
+                      >
+                        <RotateCw className="w-3.5 h-3.5 text-amber-400" />
+                        <span>Girar 90°</span>
+                      </button>
                       <button
                         type="button"
                         onClick={() => cameraInputRef.current?.click()}
-                        className="py-1.5 px-3 bg-stone-800 hover:bg-stone-750 text-stone-200 text-xs font-semibold rounded-xl flex items-center gap-1.5 transition"
+                        className="py-1.5 px-3 bg-stone-800 hover:bg-stone-750 text-stone-200 text-xs font-semibold rounded-xl flex items-center gap-1.5 transition cursor-pointer"
                       >
                         <Camera className="w-3.5 h-3.5 text-amber-400" />
                         <span>Tirar Outra Foto</span>
@@ -335,7 +457,7 @@ export const AIMenuExtractorModal: React.FC<AIMenuExtractorModalProps> = ({
                       <button
                         type="button"
                         onClick={() => fileInputRef.current?.click()}
-                        className="py-1.5 px-3 bg-stone-800 hover:bg-stone-750 text-stone-200 text-xs font-semibold rounded-xl flex items-center gap-1.5 transition"
+                        className="py-1.5 px-3 bg-stone-800 hover:bg-stone-750 text-stone-200 text-xs font-semibold rounded-xl flex items-center gap-1.5 transition cursor-pointer"
                       >
                         <UploadCloud className="w-3.5 h-3.5 text-amber-400" />
                         <span>Escolher Arquivo</span>
@@ -385,10 +507,10 @@ export const AIMenuExtractorModal: React.FC<AIMenuExtractorModalProps> = ({
                   <span>Dicas para melhor leitura da Inteligência Artificial:</span>
                 </h5>
                 <ul className="text-[11px] text-stone-400 space-y-1 list-disc list-inside">
-                  <li>Mantenha a câmera estável e com boa iluminação.</li>
-                  <li>Certifique-se de que os nomes dos pratos e preços estejam legíveis.</li>
-                  <li>A IA detecta categorias, ingredientes e preços em Reais (R$) automaticamente.</li>
-                  <li>Você poderá revisar e editar todos os itens antes de salvar.</li>
+                  <li>Mantenha a câmera firme e com iluminação adequada sobre o cardápio.</li>
+                  <li>Se a foto foi tirada na horizontal, use o botão <strong>Girar 90°</strong> para alinhá-la na vertical.</li>
+                  <li>A IA identifica automaticamente os nomes dos pratos, preços em Reais (R$) e categorias.</li>
+                  <li>Você poderá revisar e editar valores ou nomes antes de salvar no sistema.</li>
                 </ul>
               </div>
 
@@ -432,7 +554,15 @@ export const AIMenuExtractorModal: React.FC<AIMenuExtractorModalProps> = ({
                   </p>
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleAddNewItem}
+                    className="text-[11px] px-2.5 py-1 bg-amber-500 hover:bg-amber-400 text-stone-950 rounded-lg font-bold transition flex items-center gap-1 cursor-pointer"
+                  >
+                    <Plus className="w-3 h-3" />
+                    <span>Adicionar Prato</span>
+                  </button>
                   <button
                     type="button"
                     onClick={() => handleToggleSelectAll(true)}
@@ -527,6 +657,111 @@ export const AIMenuExtractorModal: React.FC<AIMenuExtractorModalProps> = ({
                             placeholder="Descrição dos ingredientes ou acompanhamentos..."
                             className="w-full bg-stone-900/60 border border-stone-800/80 rounded-xl px-2.5 py-1.5 text-[11px] text-stone-300 focus:outline-none focus:border-amber-500"
                           />
+                        </div>
+
+                        {/* Campo para Colocar Foto (Arquivo Local ou Câmera do Celular) */}
+                        <div className="pt-2 border-t border-stone-800/80 flex flex-wrap items-center gap-3">
+                          {/* Thumbnail / Visualizador da Foto */}
+                          <div className="w-14 h-14 rounded-xl bg-stone-900 border border-stone-800 overflow-hidden shrink-0 flex items-center justify-center relative group shadow-inner">
+                            {compressingItemId === item.id ? (
+                              <Loader2 className="w-5 h-5 text-amber-400 animate-spin" />
+                            ) : item.imageUrl ? (
+                              <>
+                                <img src={item.imageUrl} alt={item.name} className="w-full h-full object-cover" />
+                                <button
+                                  type="button"
+                                  onClick={() => handleUpdateItem(item.id, 'imageUrl', '')}
+                                  className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 flex items-center justify-center text-red-400 transition"
+                                  title="Remover foto"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
+                              </>
+                            ) : (
+                              <ImageIcon className="w-5 h-5 text-stone-600" />
+                            )}
+                          </div>
+
+                          {/* Controles de Ação de Foto */}
+                          <div className="flex-1 min-w-[200px] space-y-1.5">
+                            <div className="flex items-center justify-between">
+                              <span className="text-[11px] font-bold text-stone-300 flex items-center gap-1.5">
+                                <Camera className="w-3.5 h-3.5 text-amber-400" />
+                                <span>Foto do Prato:</span>
+                              </span>
+                              {item.imageUrl && (
+                                <span className="text-[10px] text-emerald-400 flex items-center gap-1 font-semibold">
+                                  <Check className="w-3 h-3" /> Foto anexada
+                                </span>
+                              )}
+                            </div>
+
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              {/* Tirar Foto na Câmera do Celular */}
+                              <button
+                                type="button"
+                                onClick={() => triggerItemCamera(item.id)}
+                                disabled={compressingItemId === item.id}
+                                className="py-1 px-2.5 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-300 font-bold text-[11px] rounded-lg flex items-center gap-1 transition active:scale-95 cursor-pointer disabled:opacity-50"
+                                title="Abrir a câmera do celular para fotografar este prato"
+                              >
+                                <Camera className="w-3 h-3 text-amber-400" />
+                                <span>Câmera do Celular</span>
+                              </button>
+
+                              {/* Escolher da Galeria / Arquivos Locais */}
+                              <button
+                                type="button"
+                                onClick={() => triggerItemGallery(item.id)}
+                                disabled={compressingItemId === item.id}
+                                className="py-1 px-2.5 bg-stone-900 hover:bg-stone-850 border border-stone-800 text-stone-300 hover:text-white font-semibold text-[11px] rounded-lg flex items-center gap-1 transition cursor-pointer disabled:opacity-50"
+                                title="Escolher foto da galeria do aparelho ou computador"
+                              >
+                                <UploadCloud className="w-3 h-3 text-stone-400" />
+                                <span>Galeria / Arquivo</span>
+                              </button>
+
+                              {/* URL Link Toggle */}
+                              <button
+                                type="button"
+                                onClick={() => setEditingUrlItemId(editingUrlItemId === item.id ? null : item.id)}
+                                className="py-1 px-1.5 text-[10px] text-stone-400 hover:text-stone-200 underline cursor-pointer"
+                              >
+                                {editingUrlItemId === item.id ? 'Fechar Link' : 'Colar Link'}
+                              </button>
+
+                              {item.imageUrl && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleUpdateItem(item.id, 'imageUrl', '')}
+                                  className="py-1 px-1.5 text-[10px] text-stone-500 hover:text-red-400 transition cursor-pointer"
+                                  title="Remover foto"
+                                >
+                                  Remover
+                                </button>
+                              )}
+                            </div>
+
+                            {/* Campo de URL Opcional */}
+                            {editingUrlItemId === item.id && (
+                              <div className="flex items-center gap-1.5 pt-1 animate-fadeIn">
+                                <input
+                                  type="url"
+                                  value={item.imageUrl || ''}
+                                  onChange={(e) => handleUpdateItem(item.id, 'imageUrl', e.target.value)}
+                                  placeholder="https://exemplo.com/foto.jpg"
+                                  className="flex-1 bg-stone-900 border border-stone-800 rounded-lg px-2 py-1 text-[11px] text-stone-200 focus:outline-none focus:border-amber-500 font-mono"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => setEditingUrlItemId(null)}
+                                  className="px-2 py-1 bg-stone-800 hover:bg-stone-700 text-stone-200 text-[11px] rounded-lg"
+                                >
+                                  OK
+                                </button>
+                              </div>
+                            )}
+                          </div>
                         </div>
                       </div>
 

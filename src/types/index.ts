@@ -10,6 +10,9 @@ export interface RestaurantConfig {
   serviceTaxPercent: number;
   estimatedKdsAlertMinutes: number;
   businessHours: string;
+  wifiSsid?: string;
+  wifiPassword?: string;
+  adminDeletePassword?: string;
   updatedAt?: string;
 }
 

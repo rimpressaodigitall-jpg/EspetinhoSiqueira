@@ -13,8 +13,10 @@ import {
   Minimize2, 
   Filter,
   Check,
-  RotateCcw
+  RotateCcw,
+  Printer
 } from 'lucide-react';
+import { printKitchenOrder } from '../utils/printer';
 
 interface KitchenKDSProps {
   orders: Order[];
@@ -268,23 +270,34 @@ export const KitchenKDS: React.FC<KitchenKDSProps> = ({ orders, config }) => {
                     </h2>
                   </div>
 
-                  {/* Age Timer */}
-                  <div className="text-right">
-                    <div
-                      className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-black font-mono ${
-                        isLate
-                          ? 'bg-red-600 text-white'
-                          : isMedium
-                          ? 'bg-amber-500 text-stone-950'
-                          : 'bg-stone-950/80 text-stone-200'
-                      }`}
+                  {/* Age Timer & Print Button */}
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => printKitchenOrder(order, config)}
+                      className="p-2 rounded-xl bg-black/40 hover:bg-black/70 text-white/90 hover:text-white border border-white/10 transition cursor-pointer"
+                      title="Imprimir cupom de produção para cozinha/bar"
                     >
-                      <Clock className="w-3.5 h-3.5" />
-                      <span>{ageMinutes} min</span>
+                      <Printer className="w-4 h-4" />
+                    </button>
+
+                    <div className="text-right">
+                      <div
+                        className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-black font-mono ${
+                          isLate
+                            ? 'bg-red-600 text-white'
+                            : isMedium
+                            ? 'bg-amber-500 text-stone-950'
+                            : 'bg-stone-950/80 text-stone-200'
+                        }`}
+                      >
+                        <Clock className="w-3.5 h-3.5" />
+                        <span>{ageMinutes} min</span>
+                      </div>
+                      <span className="text-[10px] block opacity-70 mt-0.5 font-mono">
+                        {new Date(order.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </span>
                     </div>
-                    <span className="text-[10px] block opacity-70 mt-0.5 font-mono">
-                      {new Date(order.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                    </span>
                   </div>
                 </div>
 

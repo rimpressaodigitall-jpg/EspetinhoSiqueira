@@ -6,6 +6,7 @@ import {
   MenuItem, 
   Table, 
   Order, 
+  OrderItem,
   StaffMember 
 } from '../types';
 import { 
@@ -57,10 +58,19 @@ import {
   KeyRound,
   UserCheck,
   UserX,
-  Camera
+  Camera,
+  Download,
+  Loader2,
+  Lock,
+  Eye,
+  EyeOff,
+  ShieldAlert,
+  Search
 } from 'lucide-react';
 import { ImageUploadCapture } from '../components/ImageUploadCapture';
 import { AIMenuExtractorModal } from '../components/AIMenuExtractorModal';
+import { printTableTent, printAllTableTents, printTableBill } from '../utils/printer';
+import { downloadCompleteCardPng, downloadTwoCardsA4Png, openCardInPrintWindow } from '../utils/tableCardGenerator';
 
 interface AdminAppProps {
   config: RestaurantConfig | null;
@@ -99,6 +109,9 @@ export const AdminApp: React.FC<AdminAppProps> = ({
     serviceTaxPercent: config?.serviceTaxPercent ?? 10,
     estimatedKdsAlertMinutes: config?.estimatedKdsAlertMinutes ?? 15,
     businessHours: config?.businessHours || '',
+    wifiSsid: config?.wifiSsid || '',
+    wifiPassword: config?.wifiPassword || '',
+    adminDeletePassword: config?.adminDeletePassword || '1234',
   });
 
   useEffect(() => {
@@ -114,6 +127,9 @@ export const AdminApp: React.FC<AdminAppProps> = ({
         serviceTaxPercent: config.serviceTaxPercent ?? 10,
         estimatedKdsAlertMinutes: config.estimatedKdsAlertMinutes ?? 15,
         businessHours: config.businessHours || '',
+        wifiSsid: config.wifiSsid || '',
+        wifiPassword: config.wifiPassword || '',
+        adminDeletePassword: config.adminDeletePassword || '1234',
       });
     }
   }, [config, currentBaseUrl]);
@@ -122,9 +138,23 @@ export const AdminApp: React.FC<AdminAppProps> = ({
   const [saveSuccessMsg, setSaveSuccessMsg] = useState<string | null>(null);
   const [copiedTableLink, setCopiedTableLink] = useState<string | null>(null);
 
+  // --- Secure Deletion State (Requires Admin Password) ---
+  const [deletionTarget, setDeletionTarget] = useState<{
+    type: 'menu_item' | 'category' | 'table';
+    id: string;
+    name: string;
+    extraInfo?: string;
+  } | null>(null);
+  const [deletePasswordInput, setDeletePasswordInput] = useState<string>('');
+  const [deletePasswordError, setDeletePasswordError] = useState<string | null>(null);
+  const [showDeletePassword, setShowDeletePassword] = useState<boolean>(false);
+  const [isDeletingSecurely, setIsDeletingSecurely] = useState<boolean>(false);
+
   // --- Menu Item Form State ---
   const [editingItem, setEditingItem] = useState<Partial<MenuItem> | null>(null);
   const [itemModalOpen, setItemModalOpen] = useState<boolean>(false);
+  const [menuFilterCategory, setMenuFilterCategory] = useState<string>('all');
+  const [menuSearchTerm, setMenuSearchTerm] = useState<string>('');
 
   // --- Category Form State ---
   const [editingCategory, setEditingCategory] = useState<Partial<Category> | null>(null);
@@ -134,6 +164,8 @@ export const AdminApp: React.FC<AdminAppProps> = ({
   const [editingTable, setEditingTable] = useState<Partial<Table> | null>(null);
   const [tableModalOpen, setTableModalOpen] = useState<boolean>(false);
   const [printableTable, setPrintableTable] = useState<Table | null>(null);
+  const [selectedPlateSize, setSelectedPlateSize] = useState<'10x15' | '13x20'>('13x20');
+  const [selectedCopiesPerPage, setSelectedCopiesPerPage] = useState<1 | 2>(1);
   const [qrCodesMap, setQrCodesMap] = useState<Record<string, string>>({});
 
   // --- Staff Management State ---
@@ -226,6 +258,47 @@ export const AdminApp: React.FC<AdminAppProps> = ({
     };
   }, [orders]);
 
+  // Group menu items by category into distinct sub-spaces with search and filter
+  const displayedCategoryGroups = useMemo(() => {
+    const term = menuSearchTerm.trim().toLowerCase();
+
+    // Filter items by search query if any
+    const searchFiltered = menuItems.filter((item) => {
+      if (!term) return true;
+      const cat = categories.find((c) => c.id === item.categoryId);
+      return (
+        item.name.toLowerCase().includes(term) ||
+        item.description.toLowerCase().includes(term) ||
+        cat?.name.toLowerCase().includes(term) ||
+        item.price.toString().includes(term)
+      );
+    });
+
+    // Categories to include based on selected filter
+    const activeCategories = menuFilterCategory === 'all'
+      ? categories
+      : categories.filter((c) => c.id === menuFilterCategory);
+
+    // Sort categories by order
+    const sortedCategories = [...activeCategories].sort((a, b) => (a.order || 0) - (b.order || 0));
+
+    const groups = sortedCategories.map((cat) => ({
+      category: cat,
+      items: searchFiltered.filter((item) => item.categoryId === cat.id),
+    }));
+
+    // Find any items that don't belong to any known category
+    const uncategorizedItems = searchFiltered.filter(
+      (item) => !categories.some((c) => c.id === item.categoryId)
+    );
+
+    return {
+      groups,
+      uncategorizedItems,
+      totalCount: searchFiltered.length,
+    };
+  }, [categories, menuItems, menuFilterCategory, menuSearchTerm]);
+
   // --- Handlers: Save Brand Config ---
   const handleSaveBrand = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -271,13 +344,16 @@ export const AdminApp: React.FC<AdminAppProps> = ({
     }
   };
 
-  const handleDeleteMenuItem = async (id: string) => {
-    if (!confirm('Deseja realmente excluir este prato?')) return;
-    try {
-      await deleteDoc(doc(db, 'menu_items', id));
-    } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, `menu_items/${id}`);
-    }
+  // Open secure deletion modal requesting admin password
+  const requestDeleteMenuItem = (item: MenuItem) => {
+    setDeletionTarget({
+      type: 'menu_item',
+      id: item.id,
+      name: item.name,
+      extraInfo: `R$ ${item.price.toFixed(2).replace('.', ',')}`,
+    });
+    setDeletePasswordInput('');
+    setDeletePasswordError(null);
   };
 
   // --- Handlers: Categories CRUD ---
@@ -302,12 +378,86 @@ export const AdminApp: React.FC<AdminAppProps> = ({
     }
   };
 
-  const handleDeleteCategory = async (id: string) => {
-    if (!confirm('Deseja excluir esta categoria?')) return;
+  const requestDeleteCategory = (cat: Category, itemCount?: number) => {
+    const count = typeof itemCount === 'number'
+      ? itemCount
+      : menuItems.filter((i) => i.categoryId === cat.id).length;
+
+    setDeletionTarget({
+      type: 'category',
+      id: cat.id,
+      name: cat.name,
+      extraInfo: count > 0
+        ? `Sub-categoria com ${count} ${count === 1 ? 'prato vinculado' : 'pratos vinculados'}. A exclusão removerá a categoria e seus itens.`
+        : 'Sub-categoria do cardápio (sem itens vinculados).',
+    });
+    setDeletePasswordInput('');
+    setDeletePasswordError(null);
+  };
+
+  const requestDeleteTable = (table: Table) => {
+    setDeletionTarget({
+      type: 'table',
+      id: table.id,
+      name: `Mesa ${table.tableNumber}`,
+      extraInfo: `${table.capacity} lugares`,
+    });
+    setDeletePasswordInput('');
+    setDeletePasswordError(null);
+  };
+
+  // Authorize and execute deletion with admin password
+  const handleConfirmSecureDelete = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!deletionTarget) return;
+
+    const currentAdminPassword = (config?.adminDeletePassword || brandForm.adminDeletePassword || '1234').trim();
+    const enteredPassword = deletePasswordInput.trim();
+
+    if (enteredPassword !== currentAdminPassword) {
+      setDeletePasswordError('Senha incorreta! Digite a senha de exclusão criada pelo administrador.');
+      return;
+    }
+
+    setIsDeletingSecurely(true);
+    setDeletePasswordError(null);
+
     try {
-      await deleteDoc(doc(db, 'categories', id));
-    } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, `categories/${id}`);
+      if (deletionTarget.type === 'menu_item') {
+        await deleteDoc(doc(db, 'menu_items', deletionTarget.id));
+        setSaveSuccessMsg(`Item "${deletionTarget.name}" excluído com sucesso do cardápio!`);
+      } else if (deletionTarget.type === 'category') {
+        // 1. Delete category document
+        await deleteDoc(doc(db, 'categories', deletionTarget.id));
+
+        // 2. Delete all items belonging to this category
+        const itemsToDelete = menuItems.filter((i) => i.categoryId === deletionTarget.id);
+        for (const item of itemsToDelete) {
+          try {
+            await deleteDoc(doc(db, 'menu_items', item.id));
+          } catch (e) {
+            console.warn('Erro ao excluir item vinculado à categoria:', e);
+          }
+        }
+
+        setSaveSuccessMsg(
+          `Sub-categoria "${deletionTarget.name}" ${
+            itemsToDelete.length > 0 ? `e seus ${itemsToDelete.length} itens foram excluídos` : 'foi excluída'
+          } com sucesso!`
+        );
+      } else if (deletionTarget.type === 'table') {
+        await deleteDoc(doc(db, 'tables', deletionTarget.id));
+        setSaveSuccessMsg(`Mesa "${deletionTarget.name}" excluída com sucesso!`);
+      }
+
+      setDeletionTarget(null);
+      setDeletePasswordInput('');
+      setTimeout(() => setSaveSuccessMsg(null), 3500);
+    } catch (err: any) {
+      console.error('Erro na exclusão do item:', err);
+      setDeletePasswordError(err?.message || 'Falha ao excluir o registro no banco de dados.');
+    } finally {
+      setIsDeletingSecurely(false);
     }
   };
 
@@ -345,12 +495,119 @@ export const AdminApp: React.FC<AdminAppProps> = ({
     }
   };
 
-  // Print single table display
-  const triggerPrintDisplay = (table: Table) => {
+  // State for card generation
+  const [downloadingCard, setDownloadingCard] = useState<boolean>(false);
+  const [printingCard, setPrintingCard] = useState<boolean>(false);
+
+  // Download high-resolution PNG with the complete plate art (not just QR)
+  const handleDownloadCompleteCard = async (table: Table, size: '10x15' | '13x20' = selectedPlateSize) => {
+    setDownloadingCard(true);
+    try {
+      const qrDataUrl = qrCodesMap[table.tableNumber] || '';
+      const tableUrl = getTableQrUrl(table.tableNumber, {
+        ...config,
+        publicAppUrl: brandForm.publicAppUrl || config?.publicAppUrl,
+      } as RestaurantConfig);
+
+      await downloadCompleteCardPng(table, config, qrDataUrl, tableUrl, size);
+      setSaveSuccessMsg(`Arte da Mesa ${table.tableNumber} (${size === '13x20' ? '13cm x 20cm' : '10cm x 15cm'}) baixada com sucesso (300 DPI)!`);
+      setTimeout(() => setSaveSuccessMsg(null), 3500);
+    } catch (err) {
+      console.error('Erro ao gerar PNG da placa completa', err);
+      // Fallback: download raw QR code
+      handleDownloadQr(table.tableNumber);
+    } finally {
+      setDownloadingCard(false);
+    }
+  };
+
+  // Print plate with direct window print + popup window fallback (bypasses iframe restrictions)
+  const handlePrintCompleteCard = async (
+    table: Table,
+    size: '10x15' | '13x20' = selectedPlateSize,
+    copiesPerPage: 1 | 2 = selectedCopiesPerPage
+  ) => {
+    setPrintingCard(true);
+    const qrDataUrl = qrCodesMap[table.tableNumber] || '';
+    const tableUrl = getTableQrUrl(table.tableNumber, {
+      ...config,
+      publicAppUrl: brandForm.publicAppUrl || config?.publicAppUrl,
+    } as RestaurantConfig);
+
+    // Open dedicated printable document with the requested size and copies per page
+    try {
+      await openCardInPrintWindow(table, config, qrDataUrl, tableUrl, size, copiesPerPage);
+    } catch (err) {
+      console.warn('Erro ao abrir janela de impressão, baixando imagem completa', err);
+      if (copiesPerPage === 2) {
+        await downloadTwoCardsA4Png(table, config, qrDataUrl, tableUrl, size);
+        setSaveSuccessMsg('A janela de impressão foi bloqueada no modo preview. A folha A4 com 2 placas foi baixada em PNG para impressão!');
+      } else {
+        await downloadCompleteCardPng(table, config, qrDataUrl, tableUrl, size);
+        setSaveSuccessMsg('A janela de impressão foi bloqueada no modo preview. A arte completa foi baixada em PNG para impressão!');
+      }
+      setTimeout(() => setSaveSuccessMsg(null), 4500);
+    } finally {
+      setPrintingCard(false);
+    }
+  };
+
+  // Download high-resolution PNG containing 2 plates on A4 with cutting guide
+  const handleDownloadTwoCards = async (table: Table, size: '10x15' | '13x20' = selectedPlateSize) => {
+    setDownloadingCard(true);
+    const qrDataUrl = qrCodesMap[table.tableNumber] || '';
+    const tableUrl = getTableQrUrl(table.tableNumber, {
+      ...config,
+      publicAppUrl: brandForm.publicAppUrl || config?.publicAppUrl,
+    } as RestaurantConfig);
+
+    try {
+      await downloadTwoCardsA4Png(table, config, qrDataUrl, tableUrl, size);
+      setSaveSuccessMsg(`Folha A4 com 2 placas da Mesa ${table.tableNumber} baixada com sucesso (300 DPI)!`);
+      setTimeout(() => setSaveSuccessMsg(null), 3500);
+    } catch (err) {
+      console.error('Erro ao baixar folha A4 com 2 placas', err);
+      await downloadCompleteCardPng(table, config, qrDataUrl, tableUrl, size);
+    } finally {
+      setDownloadingCard(false);
+    }
+  };
+
+  // Open single table display modal and optionally trigger print
+  const triggerPrintDisplay = (table: Table, autoExecute = false) => {
     setPrintableTable(table);
-    setTimeout(() => {
-      window.print();
-    }, 400);
+    if (autoExecute) {
+      setTimeout(() => {
+        handlePrintCompleteCard(table);
+      }, 350);
+    }
+  };
+
+  // Batch print all table displays for cutting/laminating
+  const handlePrintAllTables = () => {
+    if (tables.length === 0) return;
+    printAllTableTents(
+      tables,
+      config,
+      qrCodesMap,
+      (tableNum) =>
+        getTableQrUrl(tableNum, {
+          ...config,
+          publicAppUrl: brandForm.publicAppUrl || config?.publicAppUrl,
+        } as RestaurantConfig)
+    );
+  };
+
+  // Download high-resolution PNG of raw QR Code (fallback)
+  const handleDownloadQr = (tableNumber: string) => {
+    const dataUrl = qrCodesMap[tableNumber];
+    if (!dataUrl) return;
+    const link = document.createElement('a');
+    link.href = dataUrl;
+    link.download = `qrcode-mesa-${tableNumber}.png`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   };
 
   // --- Handlers: Staff CRUD ---
@@ -406,8 +663,10 @@ export const AdminApp: React.FC<AdminAppProps> = ({
 
   return (
     <div className="min-h-screen bg-stone-950 text-stone-100 p-3 sm:p-6 pb-24">
-      {/* Top Admin Bar */}
-      <div className="bg-stone-900 border border-stone-800 rounded-2xl p-4 mb-6 shadow-xl flex flex-wrap items-center justify-between gap-4">
+      {/* Container Principal do Painel (Oculto automaticamente durante impressão do card de mesa) */}
+      <div className={`admin-dashboard-container ${printableTable ? 'print:hidden' : ''}`}>
+        {/* Top Admin Bar */}
+        <div className="bg-stone-900 border border-stone-800 rounded-2xl p-4 mb-6 shadow-xl flex flex-wrap items-center justify-between gap-4">
         <div>
           <h1 className="text-lg font-black text-white flex items-center gap-2">
             <span>Painel Administrativo & Gestão Geral</span>
@@ -576,9 +835,37 @@ export const AdminApp: React.FC<AdminAppProps> = ({
                         </p>
                       </div>
 
-                      <span className="font-bold text-emerald-400 font-mono text-sm">
-                        R$ {o.totalAmount.toFixed(2).replace('.', ',')}
-                      </span>
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-emerald-400 font-mono text-sm">
+                          R$ {o.totalAmount.toFixed(2).replace('.', ',')}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            let orderItems: OrderItem[] = [];
+                            try {
+                              orderItems = typeof o.items === 'string' ? JSON.parse(o.items) : o.items;
+                            } catch (e) {
+                              orderItems = [];
+                            }
+                            printTableBill({
+                              tableNumber: o.tableNumber,
+                              items: orderItems.map((item) => ({ item })),
+                              subtotal: o.subtotal || o.totalAmount,
+                              serviceFee: o.serviceFee || 0,
+                              serviceTaxPercent: config?.serviceTaxPercent || 10,
+                              total: o.totalAmount,
+                              paymentMethod: o.paymentMethod,
+                              type: 'receipt',
+                              config,
+                            });
+                          }}
+                          className="p-1.5 rounded-lg bg-stone-800 hover:bg-stone-700 text-stone-300 hover:text-white transition cursor-pointer"
+                          title="Reimprimir cupom fiscal/recibo desta comanda"
+                        >
+                          <Printer className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -754,6 +1041,70 @@ export const AdminApp: React.FC<AdminAppProps> = ({
                   onChange={(e) => setBrandForm({ ...brandForm, estimatedKdsAlertMinutes: Number(e.target.value) })}
                   className="w-full bg-stone-950 border border-stone-800 rounded-xl p-2.5 text-xs text-stone-200 focus:outline-none focus:border-amber-500"
                 />
+              </div>
+
+              <div>
+                <label className="text-xs font-bold text-stone-300 block mb-1">
+                  Nome da Rede Wi-Fi (SSID para Clientes)
+                </label>
+                <input
+                  type="text"
+                  value={brandForm.wifiSsid || ''}
+                  onChange={(e) => setBrandForm({ ...brandForm, wifiSsid: e.target.value })}
+                  placeholder="Ex: Restaurante_Clientes"
+                  className="w-full bg-stone-950 border border-stone-800 rounded-xl p-2.5 text-xs text-stone-200 focus:outline-none focus:border-amber-500"
+                />
+                <span className="text-[10px] text-stone-500 block mt-0.5">
+                  Impresso automaticamente no card da mesa para os clientes conectarem.
+                </span>
+              </div>
+
+              <div>
+                <label className="text-xs font-bold text-stone-300 block mb-1">
+                  Senha do Wi-Fi dos Clientes (Opcional)
+                </label>
+                <input
+                  type="text"
+                  value={brandForm.wifiPassword || ''}
+                  onChange={(e) => setBrandForm({ ...brandForm, wifiPassword: e.target.value })}
+                  placeholder="Ex: delicia123 ou deixe em branco se aberto"
+                  className="w-full bg-stone-950 border border-stone-800 rounded-xl p-2.5 text-xs text-stone-200 focus:outline-none focus:border-amber-500"
+                />
+              </div>
+
+              {/* SENHA DE EXCLUSÃO DO ADMINISTRADOR */}
+              <div className="bg-amber-500/5 border border-amber-500/25 rounded-2xl p-3.5 space-y-2 col-span-1 sm:col-span-2">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Lock className="w-4 h-4 text-amber-400" />
+                    <label className="text-xs font-bold text-amber-300 block">
+                      Senha de Segurança para Exclusão (Admin)
+                    </label>
+                  </div>
+                  <span className="text-[10px] bg-amber-500/20 text-amber-300 px-2 py-0.5 rounded font-mono font-bold">
+                    Padrão: 1234
+                  </span>
+                </div>
+                <div className="relative">
+                  <input
+                    type={showDeletePassword ? 'text' : 'password'}
+                    value={brandForm.adminDeletePassword || ''}
+                    onChange={(e) => setBrandForm({ ...brandForm, adminDeletePassword: e.target.value })}
+                    placeholder="Digite a nova senha para autorizar exclusão (ex: 1234)"
+                    className="w-full bg-stone-950 border border-stone-800 rounded-xl p-2.5 pr-10 text-xs text-stone-100 focus:outline-none focus:border-amber-500 font-mono tracking-wider"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowDeletePassword(!showDeletePassword)}
+                    className="absolute right-3 top-2.5 text-stone-400 hover:text-stone-200 transition"
+                    title={showDeletePassword ? 'Ocultar senha' : 'Ver senha'}
+                  >
+                    {showDeletePassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+                <p className="text-[11px] text-stone-400 leading-relaxed">
+                  Esta senha será solicitada antes de excluir qualquer <strong>item do cardápio</strong>, categoria ou mesa, protegendo seus dados contra exclusões acidentais ou não autorizadas.
+                </p>
               </div>
             </div>
 
@@ -1013,8 +1364,9 @@ export const AdminApp: React.FC<AdminAppProps> = ({
                       <Edit3 className="w-3.5 h-3.5" />
                     </button>
                     <button
-                      onClick={() => handleDeleteCategory(cat.id)}
-                      className="text-stone-500 hover:text-red-400 p-0.5"
+                      onClick={() => requestDeleteCategory(cat)}
+                      className="text-stone-500 hover:text-red-400 p-0.5 transition cursor-pointer"
+                      title="Excluir categoria (requer senha)"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
@@ -1027,8 +1379,10 @@ export const AdminApp: React.FC<AdminAppProps> = ({
           {/* Dishes Header & Add Buttons */}
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <h3 className="text-base font-bold text-white">Pratos & Bebidas Cadastrados</h3>
-              <p className="text-xs text-stone-400">Total de {menuItems.length} itens no cardápio</p>
+              <h3 className="text-base font-bold text-white">Pratos &amp; Bebidas Cadastrados</h3>
+              <p className="text-xs text-stone-400">
+                Total de {menuItems.length} itens distribuídos por categorias
+              </p>
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
@@ -1066,81 +1420,350 @@ export const AdminApp: React.FC<AdminAppProps> = ({
             </div>
           </div>
 
-          {/* Menu Items Grid */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {menuItems.map((item) => {
-              const cat = categories.find((c) => c.id === item.categoryId);
-              return (
-                <div
-                  key={item.id}
-                  className="bg-stone-900 border border-stone-800 rounded-2xl p-4 flex flex-col justify-between shadow-lg"
-                >
-                  <div>
-                    <div className="flex gap-3">
-                      <img
-                        src={item.imageUrl}
-                        alt={item.name}
-                        className="w-18 h-18 rounded-xl object-cover shrink-0 bg-stone-950"
-                      />
-                      <div className="min-w-0 flex-1">
-                        <span className="text-[10px] font-bold uppercase tracking-wider text-amber-400/90 block">
-                          {cat?.name || 'Sem Categoria'}
-                        </span>
-                        <h4 className="font-bold text-sm text-white truncate">{item.name}</h4>
-                        <p className="text-xs text-stone-400 line-clamp-2 mt-0.5">
-                          {item.description}
-                        </p>
-                      </div>
-                    </div>
+          {/* Sub-espaço de Busca e Filtro de Categorias */}
+          <div className="bg-stone-900/80 border border-stone-800 p-4 rounded-2xl shadow-md space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              {/* Campo de Busca Rápida */}
+              <div className="relative flex-1 min-w-[240px]">
+                <Search className="w-4 h-4 text-stone-500 absolute left-3 top-3" />
+                <input
+                  type="text"
+                  value={menuSearchTerm}
+                  onChange={(e) => setMenuSearchTerm(e.target.value)}
+                  placeholder="Pesquisar prato, ingrediente ou valor..."
+                  className="w-full bg-stone-950 border border-stone-800 rounded-xl pl-9 pr-3 py-2 text-xs text-stone-200 placeholder-stone-500 focus:outline-none focus:border-amber-500"
+                />
+                {menuSearchTerm && (
+                  <button
+                    type="button"
+                    onClick={() => setMenuSearchTerm('')}
+                    className="absolute right-2.5 top-2.5 text-stone-500 hover:text-stone-300 text-xs"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
 
-                    <div className="flex items-center justify-between mt-3 pt-2 border-t border-stone-850 text-xs">
-                      <div>
-                        <span className="text-stone-400">Preço: </span>
-                        <strong className="text-amber-400 font-mono text-sm">
-                          R$ {item.price.toFixed(2).replace('.', ',')}
-                        </strong>
+              {/* Indicador de Itens Filtrados */}
+              <div className="text-xs text-stone-400">
+                Exibindo <strong>{displayedCategoryGroups.totalCount}</strong> de {menuItems.length} itens
+              </div>
+            </div>
+
+            {/* Pílulas de Navegação por Sub-espaço de Categoria */}
+            <div className="flex items-center gap-2 overflow-x-auto pb-1 pt-1">
+              <button
+                type="button"
+                onClick={() => setMenuFilterCategory('all')}
+                className={`py-1.5 px-3 rounded-xl text-xs font-bold transition shrink-0 cursor-pointer flex items-center gap-1.5 ${
+                  menuFilterCategory === 'all'
+                    ? 'bg-amber-500 text-stone-950 shadow-md'
+                    : 'bg-stone-950 hover:bg-stone-800 text-stone-400 border border-stone-800'
+                }`}
+              >
+                <span>Todas as Categorias</span>
+                <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono ${
+                  menuFilterCategory === 'all' ? 'bg-stone-950/20 text-stone-950' : 'bg-stone-800 text-stone-400'
+                }`}>
+                  {menuItems.length}
+                </span>
+              </button>
+
+              {categories.map((cat) => {
+                const count = menuItems.filter((i) => i.categoryId === cat.id).length;
+                const isSelected = menuFilterCategory === cat.id;
+                return (
+                  <button
+                    key={cat.id}
+                    type="button"
+                    onClick={() => setMenuFilterCategory(cat.id)}
+                    className={`py-1.5 px-3 rounded-xl text-xs font-bold transition shrink-0 cursor-pointer flex items-center gap-1.5 ${
+                      isSelected
+                        ? 'bg-amber-500 text-stone-950 shadow-md'
+                        : 'bg-stone-950 hover:bg-stone-800 text-stone-400 border border-stone-800'
+                    }`}
+                  >
+                    <span>{cat.name}</span>
+                    <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono ${
+                      isSelected ? 'bg-stone-950/20 text-stone-950' : 'bg-stone-800 text-stone-400'
+                    }`}>
+                      {count}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Sub-espaços das Categorias (Agrupamento Visual Separado) */}
+          <div className="space-y-6">
+            {displayedCategoryGroups.groups.map(({ category, items }) => (
+              <div
+                key={category.id}
+                className="bg-stone-900/60 border border-stone-800 rounded-3xl p-5 space-y-4 shadow-xl"
+              >
+                {/* Cabeçalho do Sub-espaço da Categoria */}
+                <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-stone-800">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-2xl bg-amber-500/10 border border-amber-500/25 flex items-center justify-center text-amber-400 font-black">
+                      <Utensils className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h4 className="text-base sm:text-lg font-black text-white">{category.name}</h4>
+                        <span className="text-xs font-bold px-2.5 py-0.5 rounded-full bg-amber-500/10 text-amber-300 border border-amber-500/20 font-mono">
+                          {items.length} {items.length === 1 ? 'item' : 'itens'}
+                        </span>
                       </div>
-                      <span className="text-[11px] text-stone-500">
-                        ~{item.prepTimeMinutes} min preparo
-                      </span>
+                      <p className="text-[11px] text-stone-400">
+                        Sub-espaço de pratos e bebidas vinculados à categoria {category.name}
+                      </p>
                     </div>
                   </div>
 
-                  {/* Actions */}
-                  <div className="flex items-center justify-between gap-2 mt-3 pt-2 border-t border-stone-800">
-                    <span
-                      className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                        item.available
-                          ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                          : 'bg-red-500/10 text-red-400 border border-red-500/20'
-                      }`}
+                  {/* Ações do Sub-espaço da Categoria */}
+                  <div className="flex flex-wrap items-center gap-2">
+                    {/* Ação Rápida: Adicionar item direto neste sub-espaço */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingItem({
+                          categoryId: category.id,
+                          name: '',
+                          description: '',
+                          price: 0,
+                          imageUrl: '',
+                          available: true,
+                          prepTimeMinutes: 15,
+                          featured: false,
+                        });
+                        setItemModalOpen(true);
+                      }}
+                      className="py-1.5 px-3 bg-stone-800 hover:bg-stone-750 text-amber-400 border border-stone-700 font-bold text-xs rounded-xl flex items-center gap-1.5 transition cursor-pointer active:scale-95"
+                      title={`Cadastrar novo prato em ${category.name}`}
                     >
-                      {item.available ? 'Disponível' : 'Esgotado'}
-                    </span>
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>Adicionar Prato</span>
+                    </button>
 
-                    <div className="flex items-center gap-1">
-                      <button
-                        onClick={() => {
-                          setEditingItem(item);
-                          setItemModalOpen(true);
-                        }}
-                        className="p-1.5 text-stone-400 hover:text-amber-400 rounded-lg hover:bg-stone-800 transition"
-                        title="Editar"
-                      >
-                        <Edit3 className="w-4 h-4" />
-                      </button>
-                      <button
-                        onClick={() => handleDeleteMenuItem(item.id)}
-                        className="p-1.5 text-stone-400 hover:text-red-400 rounded-lg hover:bg-stone-800 transition"
-                        title="Excluir"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
+                    {/* Editar Categoria */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingCategory(category);
+                        setCategoryModalOpen(true);
+                      }}
+                      className="py-1.5 px-2.5 bg-stone-800 hover:bg-stone-750 text-stone-300 border border-stone-700 font-bold text-xs rounded-xl flex items-center gap-1.5 transition cursor-pointer active:scale-95"
+                      title={`Editar nome e ordem da categoria "${category.name}"`}
+                    >
+                      <Edit3 className="w-3.5 h-3.5" />
+                      <span className="hidden sm:inline">Editar</span>
+                    </button>
+
+                    {/* Excluir Sub-categoria com Senha */}
+                    <button
+                      type="button"
+                      onClick={() => requestDeleteCategory(category, items.length)}
+                      className="py-1.5 px-3 bg-red-500/10 hover:bg-red-500/20 text-red-400 hover:text-red-300 border border-red-500/30 font-bold text-xs rounded-xl flex items-center gap-1.5 transition cursor-pointer active:scale-95"
+                      title={`Excluir sub-categoria "${category.name}" com senha`}
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>Excluir Categoria</span>
+                    </button>
                   </div>
                 </div>
-              );
-            })}
+
+                {/* Grid de Itens do Sub-espaço */}
+                {items.length > 0 ? (
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5">
+                    {items.map((item) => (
+                      <div
+                        key={item.id}
+                        className="bg-stone-950/80 border border-stone-800/90 hover:border-stone-700 rounded-2xl p-4 flex flex-col justify-between shadow-md transition"
+                      >
+                        <div>
+                          <div className="flex gap-3">
+                            <img
+                              src={item.imageUrl || 'https://images.unsplash.com/photo-1544025162-d76694265947?w=600&auto=format&fit=crop&q=80'}
+                              alt={item.name}
+                              className="w-18 h-18 rounded-xl object-cover shrink-0 bg-stone-900 border border-stone-800"
+                            />
+                            <div className="min-w-0 flex-1">
+                              <span className="text-[10px] font-bold uppercase tracking-wider text-amber-400/90 block">
+                                {category.name}
+                              </span>
+                              <h5 className="font-bold text-sm text-white truncate">{item.name}</h5>
+                              <p className="text-xs text-stone-400 line-clamp-2 mt-0.5">
+                                {item.description || 'Sem descrição cadastrada.'}
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center justify-between mt-3 pt-2 border-t border-stone-850 text-xs">
+                            <div>
+                              <span className="text-stone-400">Preço: </span>
+                              <strong className="text-amber-400 font-mono text-sm">
+                                R$ {item.price.toFixed(2).replace('.', ',')}
+                              </strong>
+                            </div>
+                            <span className="text-[11px] text-stone-500">
+                              ~{item.prepTimeMinutes} min preparo
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Actions */}
+                        <div className="flex items-center justify-between gap-2 mt-3 pt-2 border-t border-stone-800/80">
+                          <span
+                            className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                              item.available
+                                ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                                : 'bg-red-500/10 text-red-400 border border-red-500/20'
+                            }`}
+                          >
+                            {item.available ? 'Disponível' : 'Esgotado'}
+                          </span>
+
+                          <div className="flex items-center gap-1">
+                            <button
+                              onClick={() => {
+                                setEditingItem(item);
+                                setItemModalOpen(true);
+                              }}
+                              className="p-1.5 text-stone-400 hover:text-amber-400 rounded-lg hover:bg-stone-800 transition cursor-pointer"
+                              title="Editar"
+                            >
+                              <Edit3 className="w-4 h-4" />
+                            </button>
+                            <button
+                              onClick={() => requestDeleteMenuItem(item)}
+                              className="p-1.5 text-stone-400 hover:text-red-400 rounded-lg hover:bg-stone-800 transition cursor-pointer"
+                              title="Excluir item do cardápio (requer senha)"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="py-7 px-4 bg-stone-950/40 rounded-2xl border border-dashed border-stone-800/70 text-center space-y-2">
+                    <p className="text-xs text-stone-400">
+                      Nenhum prato cadastrado no sub-espaço de <strong>{category.name}</strong>.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingItem({
+                          categoryId: category.id,
+                          name: '',
+                          description: '',
+                          price: 0,
+                          imageUrl: '',
+                          available: true,
+                          prepTimeMinutes: 15,
+                          featured: false,
+                        });
+                        setItemModalOpen(true);
+                      }}
+                      className="py-1.5 px-3 bg-stone-800 hover:bg-stone-750 text-amber-400 text-xs font-bold rounded-xl transition cursor-pointer inline-flex items-center gap-1"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>Cadastrar Primeiro Item</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+            ))}
+
+            {/* Sub-espaço para itens sem categoria (se houver) */}
+            {displayedCategoryGroups.uncategorizedItems.length > 0 && (
+              <div className="bg-stone-900/60 border border-stone-800 rounded-3xl p-5 space-y-4 shadow-xl">
+                <div className="flex items-center justify-between pb-3 border-b border-stone-800">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-10 h-10 rounded-2xl bg-stone-800 flex items-center justify-center text-stone-400 font-bold">
+                      <Utensils className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h4 className="text-base font-black text-white">Outros / Sem Categoria</h4>
+                      <p className="text-[11px] text-stone-400">
+                        Itens ainda não associados a uma categoria oficial
+                      </p>
+                    </div>
+                  </div>
+                  <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-stone-800 text-stone-300">
+                    {displayedCategoryGroups.uncategorizedItems.length} itens
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5">
+                  {displayedCategoryGroups.uncategorizedItems.map((item) => (
+                    <div
+                      key={item.id}
+                      className="bg-stone-950/80 border border-stone-800 rounded-2xl p-4 flex flex-col justify-between shadow-md"
+                    >
+                      <div>
+                        <div className="flex gap-3">
+                          <img
+                            src={item.imageUrl || 'https://images.unsplash.com/photo-1544025162-d76694265947?w=600&auto=format&fit=crop&q=80'}
+                            alt={item.name}
+                            className="w-18 h-18 rounded-xl object-cover shrink-0 bg-stone-900 border border-stone-800"
+                          />
+                          <div className="min-w-0 flex-1">
+                            <span className="text-[10px] font-bold uppercase tracking-wider text-stone-500 block">
+                              Sem Categoria
+                            </span>
+                            <h5 className="font-bold text-sm text-white truncate">{item.name}</h5>
+                            <p className="text-xs text-stone-400 line-clamp-2 mt-0.5">
+                              {item.description || 'Sem descrição cadastrada.'}
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center justify-between mt-3 pt-2 border-t border-stone-850 text-xs">
+                          <div>
+                            <span className="text-stone-400">Preço: </span>
+                            <strong className="text-amber-400 font-mono text-sm">
+                              R$ {item.price.toFixed(2).replace('.', ',')}
+                            </strong>
+                          </div>
+                          <span className="text-[11px] text-stone-500">
+                            ~{item.prepTimeMinutes} min preparo
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Actions */}
+                      <div className="flex items-center justify-between gap-2 mt-3 pt-2 border-t border-stone-800">
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-stone-800 text-stone-400">
+                          {item.available ? 'Disponível' : 'Esgotado'}
+                        </span>
+                        <div className="flex items-center gap-1">
+                          <button
+                            onClick={() => {
+                              setEditingItem(item);
+                              setItemModalOpen(true);
+                            }}
+                            className="p-1.5 text-stone-400 hover:text-amber-400 rounded-lg hover:bg-stone-800 transition"
+                            title="Editar"
+                          >
+                            <Edit3 className="w-4 h-4" />
+                          </button>
+                          <button
+                            onClick={() => requestDeleteMenuItem(item)}
+                            className="p-1.5 text-stone-400 hover:text-red-400 rounded-lg hover:bg-stone-800 transition cursor-pointer"
+                            title="Excluir item do cardápio"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -1265,6 +1888,49 @@ export const AdminApp: React.FC<AdminAppProps> = ({
             )}
           </div>
 
+          {/* Batch Print & Header Toolbar */}
+          <div className="bg-stone-900 border border-stone-800 p-4 rounded-2xl flex flex-wrap items-center justify-between gap-3 shadow-md">
+            <div>
+              <h4 className="font-bold text-sm text-white flex items-center gap-2">
+                <span>Mesas & Placas com QR Code</span>
+                <span className="px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/30 text-xs font-mono font-bold">
+                  {tables.length} mesas
+                </span>
+              </h4>
+              <p className="text-xs text-stone-400 mt-0.5">
+                Prontas para impressão em papel comum, papel cartão ou display de acrílico
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={handlePrintAllTables}
+                className="py-2 px-3.5 bg-stone-800 hover:bg-stone-750 text-amber-300 border border-amber-500/30 font-bold text-xs rounded-xl flex items-center gap-2 transition cursor-pointer shadow-sm hover:border-amber-400"
+                title="Gera um documento único com todos os displays de mesa para recortar e plastificar"
+              >
+                <Printer className="w-4 h-4 text-amber-400" />
+                <span>Imprimir Todas as Mesas (A4 / Lote)</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setEditingTable({
+                    tableNumber: (tables.length + 1).toString().padStart(2, '0'),
+                    capacity: 4,
+                    status: 'available',
+                  });
+                  setTableModalOpen(true);
+                }}
+                className="py-2 px-3.5 bg-amber-500 hover:bg-amber-400 text-stone-950 font-black text-xs rounded-xl shadow-md flex items-center gap-1.5 transition active:scale-95"
+              >
+                <Plus className="w-4 h-4" />
+                <span>Nova Mesa</span>
+              </button>
+            </div>
+          </div>
+
           {/* Tables Cards Grid with QR Codes & Direct Testing */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
             {tables.map((table) => {
@@ -1359,17 +2025,26 @@ export const AdminApp: React.FC<AdminAppProps> = ({
 
                     <div className="flex items-center gap-1.5">
                       <button
-                        onClick={() => triggerPrintDisplay(table)}
+                        onClick={() => triggerPrintDisplay(table, true)}
                         className="flex-1 py-2 px-2 bg-stone-950 hover:bg-stone-800 text-amber-400 border border-stone-800 text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 transition cursor-pointer"
+                        title="Imprimir plaqueta ou display acrílico desta mesa"
                       >
                         <Printer className="w-3.5 h-3.5" />
                         <span>Imprimir Plaqueta</span>
                       </button>
 
                       <button
-                        onClick={() => handleDeleteTable(table.id)}
-                        className="p-2 text-stone-500 hover:text-red-400 rounded-xl hover:bg-stone-800 transition"
-                        title="Excluir mesa"
+                        onClick={() => handleDownloadCompleteCard(table)}
+                        className="p-2 bg-stone-950 hover:bg-stone-800 text-amber-400 hover:text-amber-300 border border-stone-800 rounded-xl transition cursor-pointer"
+                        title="Baixar arte completa da placa da mesa em PNG (alta definição)"
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                      </button>
+
+                      <button
+                        onClick={() => requestDeleteTable(table)}
+                        className="p-2 text-stone-500 hover:text-red-400 rounded-xl hover:bg-stone-800 transition cursor-pointer"
+                        title="Excluir mesa (requer senha)"
                       >
                         <Trash2 className="w-4 h-4" />
                       </button>
@@ -2041,69 +2716,293 @@ export const AdminApp: React.FC<AdminAppProps> = ({
           </div>
         </div>
       )}
+      </div>
 
-      {/* PRINT-ONLY TABLE TENT / DISPLAY PREVIEW (Appears in Print or Modal) */}
+      {/* MODAL: CARD COMPLETO DE MESA & IMPRESSÃO PROFISSIONAL */}
+      {/* MODAL: CARD COMPLETO DE MESA & IMPRESSÃO PROFISSIONAL */}
       {printableTable && (
-        <div className="fixed inset-0 z-50 bg-black/90 backdrop-blur-md flex items-center justify-center p-4 print:p-0 print:bg-white print:fixed print:inset-0">
-          <div className="bg-white text-stone-900 rounded-3xl p-8 max-w-sm w-full text-center shadow-2xl border-2 border-stone-200 print:shadow-none print:border-none print:w-full print:max-w-none">
-            {/* Header with Logo */}
-            {config?.logoUrl && (
-              <img
-                src={config.logoUrl}
-                alt={config.name}
-                className="w-16 h-16 rounded-2xl mx-auto object-cover ring-2 ring-amber-500/20 mb-2"
-              />
-            )}
-            <h2 className="text-xl font-black uppercase tracking-tight text-stone-950">
-              {config?.name || 'ComandaSmart'}
-            </h2>
-            <p className="text-xs text-stone-500 mt-0.5">
-              Cardápio Digital & Atendimento na Mesa
-            </p>
+        <div id="printable-table-modal-container" className="print-modal-container fixed inset-0 z-50 bg-black/90 backdrop-blur-md flex flex-col items-center justify-center p-3 sm:p-4 overflow-y-auto animate-fadeIn print:static print:bg-white print:p-0 print:m-0 print:w-full print:block">
+          
+          {/* Seletor de Tamanho e Cópias por Página (Folha A4) */}
+          <div className="mb-3 flex flex-wrap items-center justify-center gap-2.5 print:hidden z-10 shrink-0">
+            {/* Seletor de Tamanho da Placa (13x20cm vs 10x15cm) */}
+            <div className="flex items-center gap-1 bg-stone-900 border border-stone-800 p-1.5 rounded-2xl shadow-xl">
+              <span className="text-[11px] font-bold text-stone-400 pl-2 pr-1">Tamanho:</span>
+              <button
+                type="button"
+                onClick={() => setSelectedPlateSize('13x20')}
+                className={`py-1.5 px-3 rounded-xl text-xs font-black transition cursor-pointer flex items-center gap-1.5 ${
+                  selectedPlateSize === '13x20'
+                    ? 'bg-amber-500 text-stone-950 shadow-md ring-2 ring-amber-400'
+                    : 'text-stone-400 hover:text-white hover:bg-stone-800'
+                }`}
+              >
+                <span>📐 13cm x 20cm</span>
+                <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-bold uppercase ${
+                  selectedPlateSize === '13x20' ? 'bg-amber-600 text-stone-950' : 'bg-stone-800 text-stone-400'
+                }`}>
+                  Grande
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setSelectedPlateSize('10x15')}
+                className={`py-1.5 px-3 rounded-xl text-xs font-black transition cursor-pointer flex items-center gap-1.5 ${
+                  selectedPlateSize === '10x15'
+                    ? 'bg-amber-500 text-stone-950 shadow-md ring-2 ring-amber-400'
+                    : 'text-stone-400 hover:text-white hover:bg-stone-800'
+                }`}
+              >
+                <span>📐 10cm x 15cm</span>
+                <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-bold uppercase ${
+                  selectedPlateSize === '10x15' ? 'bg-amber-600 text-stone-950' : 'bg-stone-800 text-stone-400'
+                }`}>
+                  Padrão
+                </span>
+              </button>
+            </div>
 
-            {/* Table Number Pill */}
-            <div className="my-4 py-2 px-6 rounded-2xl bg-amber-500/10 border-2 border-amber-500/30 inline-block">
-              <span className="text-2xs font-bold uppercase tracking-widest text-amber-700 block">
+            {/* Seletor de Cópias por Página (Folha A4) */}
+            <div className="flex items-center gap-1 bg-stone-900 border border-stone-800 p-1.5 rounded-2xl shadow-xl">
+              <span className="text-[11px] font-bold text-stone-400 pl-2 pr-1">Por Folha:</span>
+              <button
+                type="button"
+                onClick={() => setSelectedCopiesPerPage(1)}
+                className={`py-1.5 px-3 rounded-xl text-xs font-black transition cursor-pointer flex items-center gap-1 ${
+                  selectedCopiesPerPage === 1
+                    ? 'bg-amber-500 text-stone-950 shadow-md ring-2 ring-amber-400'
+                    : 'text-stone-400 hover:text-white hover:bg-stone-800'
+                }`}
+                title="Imprime 1 placa individual por página"
+              >
+                <span>📄 1 por Folha</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setSelectedCopiesPerPage(2)}
+                className={`py-1.5 px-3 rounded-xl text-xs font-black transition cursor-pointer flex items-center gap-1 ${
+                  selectedCopiesPerPage === 2
+                    ? 'bg-amber-500 text-stone-950 shadow-md ring-2 ring-amber-400'
+                    : 'text-stone-400 hover:text-white hover:bg-stone-800'
+                }`}
+                title="Coloca 2 placas na mesma folha A4 com linha de corte para economizar papel"
+              >
+                <span>📄📄 2 por Página (A4)</span>
+              </button>
+            </div>
+          </div>
+
+          <div className={`printable-tent-card bg-white text-stone-950 rounded-3xl ${
+            selectedPlateSize === '13x20' ? 'p-6 sm:p-9 max-w-xl' : 'p-6 sm:p-7 max-w-md'
+          } w-full text-center shadow-2xl border-4 border-stone-900 relative my-auto print:m-auto print:border-4 print:border-stone-900 print:shadow-none print:bg-white print:text-black ${
+            selectedPlateSize === '13x20' ? 'print:w-[460px] print:max-w-[460px]' : 'print:w-[380px] print:max-w-[380px]'
+          }`}>
+            
+            {/* Tag de Recorte e Guia de Uso */}
+            <div className="flex items-center justify-between text-[10px] font-mono font-bold text-stone-500 pb-2 mb-3 border-b-2 border-dashed border-stone-300 print:flex">
+              <span>✂️ RECORTE</span>
+              <span className="bg-amber-100 print:bg-[#fef3c7] text-amber-900 print:text-[#b45309] px-3 py-1 rounded-full font-sans text-[10px] font-black uppercase tracking-wider">
+                Display de Mesa ({selectedPlateSize === '13x20' ? '13x20cm (Grande)' : '10x15cm (Padrão)'} / Acrílico)
+              </span>
+              <span>✂️ RECORTE</span>
+            </div>
+
+            {/* Header: Logo & Nome da Loja */}
+            <div className="space-y-1 mb-3">
+              {config?.logoUrl ? (
+                <img
+                  src={config.logoUrl}
+                  alt={config.name}
+                  className={`${selectedPlateSize === '13x20' ? 'w-20 h-20' : 'w-16 h-16'} rounded-2xl mx-auto object-contain ring-2 ring-stone-900/10 mb-1 print:block print:mx-auto`}
+                />
+              ) : (
+                <div className={`${selectedPlateSize === '13x20' ? 'text-4xl' : 'text-3xl'} mb-1`}>🍽️</div>
+              )}
+              <h2 className={`${selectedPlateSize === '13x20' ? 'text-2xl sm:text-3xl' : 'text-xl sm:text-2xl'} font-black uppercase tracking-tight text-stone-950 print:text-black leading-tight`}>
+                {config?.name || 'ComandaSmart'}
+              </h2>
+              <p className={`${selectedPlateSize === '13x20' ? 'text-xs' : 'text-[11px]'} font-bold text-stone-600 print:text-stone-700 uppercase tracking-wider`}>
+                {config?.tagline || 'Cardápio Digital & Atendimento na Mesa'}
+              </p>
+            </div>
+
+            {/* Table Number Badge - BEM MAIOR PARA VISUALIZAÇÃO */}
+            <div className={`my-3 ${selectedPlateSize === '13x20' ? 'py-3 px-8' : 'py-2 px-6'} rounded-2xl bg-amber-50 print:bg-[#fffbeb] border-3 border-amber-500 print:border-[#d97706] inline-block shadow-md`}>
+              <span className={`${selectedPlateSize === '13x20' ? 'text-xs' : 'text-[10px]'} font-black uppercase tracking-widest text-amber-800 print:text-[#b45309] block`}>
                 SEJA BEM-VINDO
               </span>
-              <span className="text-3xl font-black text-amber-600">
+              <span className={`${selectedPlateSize === '13x20' ? 'text-4xl sm:text-5xl' : 'text-3xl sm:text-4xl'} font-black text-amber-600 print:text-[#b45309] leading-none`}>
                 MESA {printableTable.tableNumber}
               </span>
             </div>
 
-            {/* QR Code */}
-            <div className="p-3 bg-stone-50 rounded-2xl border border-stone-200 inline-block shadow-inner mb-3">
-              <img
-                src={qrCodesMap[printableTable.tableNumber]}
-                alt={`QR Code Mesa ${printableTable.tableNumber}`}
-                className="w-48 h-48 mx-auto"
-              />
+            {/* QR Code Container with Frame - BEM MAIOR */}
+            <div className="my-2 p-3 bg-white print:bg-white rounded-2xl border-2 border-stone-300 print:border-stone-400 inline-block shadow-sm">
+              {qrCodesMap[printableTable.tableNumber] ? (
+                <img
+                  src={qrCodesMap[printableTable.tableNumber]}
+                  alt={`QR Code Mesa ${printableTable.tableNumber}`}
+                  className={`${selectedPlateSize === '13x20' ? 'w-56 h-56 sm:w-64 sm:h-64' : 'w-44 h-44 sm:w-48 sm:h-48'} mx-auto object-contain print:block`}
+                  style={{ imageRendering: 'pixelated' }}
+                />
+              ) : (
+                <div className="w-48 h-48 flex items-center justify-center text-xs text-stone-400">
+                  Gerando QR...
+                </div>
+              )}
             </div>
 
-            {/* URL Printed for manual access */}
-            <div className="mb-3 px-2">
-              <span className="text-[10px] text-stone-500 font-mono block break-all">
-                {getTableQrUrl(printableTable.tableNumber, {
+            {/* 3-Step Clear Instructions - BEM MAIOR E LEGÍVEL */}
+            <div className={`my-3 bg-stone-50 print:bg-[#fafaf9] border border-stone-200 print:border-stone-300 rounded-2xl ${
+              selectedPlateSize === '13x20' ? 'p-4 space-y-2.5' : 'p-3 space-y-1.5'
+            } text-left`}>
+              <div className="flex items-center gap-2.5">
+                <span className={`${selectedPlateSize === '13x20' ? 'w-6 h-6 text-xs' : 'w-5 h-5 text-[10px]'} rounded-full bg-stone-950 print:bg-black text-white font-black flex items-center justify-center shrink-0`}>
+                  1
+                </span>
+                <span className={`font-bold text-stone-900 print:text-black ${selectedPlateSize === '13x20' ? 'text-xs sm:text-sm' : 'text-[11px]'}`}>
+                  Aponte a câmera do seu celular para o QR Code
+                </span>
+              </div>
+              <div className="flex items-center gap-2.5">
+                <span className={`${selectedPlateSize === '13x20' ? 'w-6 h-6 text-xs' : 'w-5 h-5 text-[10px]'} rounded-full bg-stone-950 print:bg-black text-white font-black flex items-center justify-center shrink-0`}>
+                  2
+                </span>
+                <span className={`font-bold text-stone-900 print:text-black ${selectedPlateSize === '13x20' ? 'text-xs sm:text-sm' : 'text-[11px]'}`}>
+                  Abra o cardápio e personalize seus pratos
+                </span>
+              </div>
+              <div className="flex items-center gap-2.5">
+                <span className={`${selectedPlateSize === '13x20' ? 'w-6 h-6 text-xs' : 'w-5 h-5 text-[10px]'} rounded-full bg-stone-950 print:bg-black text-white font-black flex items-center justify-center shrink-0`}>
+                  3
+                </span>
+                <span className={`font-bold text-stone-900 print:text-black ${selectedPlateSize === '13x20' ? 'text-xs sm:text-sm' : 'text-[11px]'}`}>
+                  Seu pedido vai direto para a cozinha e garçom
+                </span>
+              </div>
+            </div>
+
+            {/* Wi-Fi Info Box (if configured) */}
+            {(config?.wifiSsid || brandForm.wifiSsid) && (
+              <div className={`mb-2 ${selectedPlateSize === '13x20' ? 'py-2 px-4 text-xs' : 'py-1.5 px-3 text-[11px]'} bg-emerald-50 print:bg-[#f0fdf4] border border-emerald-400 print:border-[#22c55e] border-dashed rounded-xl text-emerald-900 print:text-[#166534] font-bold inline-block max-w-full`}>
+                📶 Wi-Fi: <strong>{config?.wifiSsid || brandForm.wifiSsid}</strong>
+                {(config?.wifiPassword || brandForm.wifiPassword) && (
+                  <span> &nbsp;•&nbsp; Senha: <strong>{config?.wifiPassword || brandForm.wifiPassword}</strong></span>
+                )}
+              </div>
+            )}
+
+            {/* Direct Link */}
+            <div className="mb-2 px-2">
+              <span className={`${selectedPlateSize === '13x20' ? 'text-[11px]' : 'text-[9.5px]'} text-stone-600 print:text-stone-700 font-mono block break-all font-semibold`}>
+                Acesso direto: {getTableQrUrl(printableTable.tableNumber, {
                   ...config,
                   publicAppUrl: brandForm.publicAppUrl || config?.publicAppUrl,
                 } as RestaurantConfig)}
               </span>
             </div>
 
-            {/* Instructions */}
-            <div className="space-y-1 text-xs text-stone-700">
-              <p className="font-bold flex items-center justify-center gap-1.5 text-stone-900">
-                <span>📱 Aponte a câmera do seu celular</span>
-              </p>
-              <p className="text-stone-500 text-[11px]">
-                Faça seu pedido direto para a cozinha, chame o garçom e acompanhe sua comanda.
-              </p>
+            {/* Footer Tag */}
+            <div className={`${selectedPlateSize === '13x20' ? 'text-[10px]' : 'text-[9px]'} text-stone-500 print:text-stone-600 uppercase tracking-wider mb-2 font-semibold`}>
+              ✨ Atendimento Inteligente na Mesa • ComandaSmart
             </div>
 
-            {/* Print, Test & Close Buttons (hidden on physical print) */}
-            <div className="mt-6 pt-4 border-t border-stone-200 flex flex-col gap-2 print:hidden">
-              <div className="flex gap-2">
+            {/* Aviso de Modo 2 por Página A4 Ativo */}
+            {selectedCopiesPerPage === 2 && (
+              <div className="my-2 py-2 px-3 bg-amber-50 border border-amber-400/80 rounded-xl text-xs text-amber-950 font-bold flex items-center justify-center gap-2 print:hidden">
+                <Copy className="w-4 h-4 text-amber-600 shrink-0" />
+                <span>Modo 2 Placas por Página ativado: a impressão gerará 2 placas na mesma folha A4 com guia de corte central.</span>
+              </div>
+            )}
+
+            {/* Print, Test, Download & Close Buttons (hidden on physical print) */}
+            <div className="mt-4 pt-3 border-t border-stone-200 flex flex-col gap-2 print:hidden">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 <button
+                  type="button"
+                  onClick={() => handlePrintCompleteCard(printableTable, selectedPlateSize, selectedCopiesPerPage)}
+                  disabled={printingCard}
+                  className="py-3 px-3 bg-amber-500 hover:bg-amber-400 text-stone-950 text-xs font-black rounded-xl shadow-md flex items-center justify-center gap-1.5 cursor-pointer transition active:scale-95 disabled:opacity-50"
+                  title={selectedCopiesPerPage === 2 ? 'Imprime 2 placas na mesma folha A4 com guia de corte' : `Imprime a placa completa exatamente como exibida na tela (${selectedPlateSize === '13x20' ? '13cm x 20cm' : '10cm x 15cm'})`}
+                >
+                  {printingCard ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Abrindo Impressão...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Printer className="w-4 h-4" />
+                      <span>
+                        {selectedCopiesPerPage === 2
+                          ? 'Imprimir 2 por Página (Folha A4)'
+                          : `Imprimir Placa (${selectedPlateSize === '13x20' ? '13x20cm' : '10x15cm'})`}
+                      </span>
+                    </>
+                  )}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (selectedCopiesPerPage === 2) {
+                      handleDownloadTwoCards(printableTable, selectedPlateSize);
+                    } else {
+                      handleDownloadCompleteCard(printableTable, selectedPlateSize);
+                    }
+                  }}
+                  disabled={downloadingCard}
+                  className="py-3 px-3 bg-stone-900 hover:bg-stone-800 text-amber-400 border border-amber-500/30 text-xs font-black rounded-xl shadow-md flex items-center justify-center gap-1.5 cursor-pointer transition active:scale-95 disabled:opacity-50"
+                  title={selectedCopiesPerPage === 2 ? 'Baixa a folha A4 completa contendo 2 placas com guia de corte em PNG 300 DPI' : `Baixa a arte completa com moldura, logo, mesa, QR code e instruções em PNG 300 DPI (${selectedPlateSize === '13x20' ? '13cm x 20cm' : '10cm x 15cm'})`}
+                >
+                  {downloadingCard ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin text-amber-400" />
+                      <span>Gerando Arte (300 DPI)...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Download className="w-4 h-4 text-amber-400" />
+                      <span>
+                        {selectedCopiesPerPage === 2
+                          ? 'Baixar Folha A4 (2 Placas PNG)'
+                          : `Baixar PNG (${selectedPlateSize === '13x20' ? '13x20cm' : '10x15cm'})`}
+                      </span>
+                    </>
+                  )}
+                </button>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                <button
+                  type="button"
+                  onClick={() => handlePrintCompleteCard(printableTable, selectedPlateSize, 2)}
+                  className="py-2.5 px-2 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 cursor-pointer transition active:scale-95"
+                  title="Imprime diretamente 2 placas por página na folha A4"
+                >
+                  <Copy className="w-3.5 h-3.5 text-amber-600" />
+                  <span>2 por A4</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    const qrDataUrl = qrCodesMap[printableTable.tableNumber] || '';
+                    const tableUrl = getTableQrUrl(printableTable.tableNumber, {
+                      ...config,
+                      publicAppUrl: brandForm.publicAppUrl || config?.publicAppUrl,
+                    } as RestaurantConfig);
+                    printTableTent(printableTable, config, qrDataUrl, tableUrl, { layout: 'tent_fold', size: selectedPlateSize });
+                  }}
+                  className="py-2.5 px-2 bg-stone-100 hover:bg-stone-200 text-stone-800 text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 cursor-pointer transition"
+                  title="Gera folha com frente e verso para dobrar e ficar de pé na mesa"
+                >
+                  <Layers className="w-3.5 h-3.5 text-stone-600" />
+                  <span>Tenda (2 Lados)</span>
+                </button>
+
+                <button
+                  type="button"
                   onClick={() => {
                     if (onOpenTableClient) {
                       onOpenTableClient(printableTable.tableNumber);
@@ -2115,26 +3014,32 @@ export const AdminApp: React.FC<AdminAppProps> = ({
                       } as RestaurantConfig);
                     }
                   }}
-                  className="flex-1 py-2.5 bg-stone-100 hover:bg-stone-200 text-stone-900 text-xs font-bold rounded-xl flex items-center justify-center gap-1.5"
+                  className="py-2.5 px-2 bg-stone-100 hover:bg-stone-200 text-stone-700 text-xs font-semibold rounded-xl flex items-center justify-center gap-1.5"
                 >
-                  <Smartphone className="w-3.5 h-3.5" />
-                  <span>Testar no Navegador</span>
+                  <Smartphone className="w-3.5 h-3.5 text-stone-600" />
+                  <span>Testar Mesa</span>
                 </button>
+
                 <button
-                  onClick={() => window.print()}
-                  className="flex-1 py-2.5 bg-amber-500 hover:bg-amber-400 text-stone-950 text-xs font-black rounded-xl shadow-md flex items-center justify-center gap-1.5"
+                  type="button"
+                  onClick={() => setPrintableTable(null)}
+                  className="py-2.5 px-2 bg-stone-200 hover:bg-stone-300 text-stone-900 text-xs font-bold rounded-xl cursor-pointer"
                 >
-                  <Printer className="w-4 h-4" />
-                  <span>Imprimir Agora</span>
+                  Fechar
                 </button>
               </div>
 
-              <button
-                onClick={() => setPrintableTable(null)}
-                className="w-full py-2 bg-stone-200 hover:bg-stone-300 text-stone-700 text-xs font-bold rounded-xl"
-              >
-                Fechar Visualização
-              </button>
+              {/* Opção secundária: baixar apenas o código QR simples */}
+              <div className="text-center pt-1">
+                <button
+                  type="button"
+                  onClick={() => handleDownloadQr(printableTable.tableNumber)}
+                  className="text-[10px] text-stone-400 hover:text-stone-600 underline cursor-pointer"
+                  title="Baixar apenas a imagem quadrada simples do QR code"
+                >
+                  Baixar apenas o QR code simples (sem a moldura)
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -2296,6 +3201,113 @@ export const AdminApp: React.FC<AdminAppProps> = ({
                 Confirmar Exclusão
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL DE SEGURANÇA: EXCLUSÃO DE ITEM/CATEGORIA/MESA COM SENHA DO ADMIN */}
+      {deletionTarget && (
+        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4 animate-fadeIn">
+          <div className="bg-stone-900 border border-stone-800 w-full max-w-md rounded-3xl p-6 shadow-2xl space-y-5 animate-scaleUp">
+            <div className="flex items-center gap-3">
+              <div className="w-12 h-12 rounded-2xl bg-red-500/10 border border-red-500/20 flex items-center justify-center shrink-0">
+                <ShieldAlert className="w-6 h-6 text-red-500" />
+              </div>
+              <div>
+                <h3 className="font-black text-lg text-white">Exclusão Protegida</h3>
+                <p className="text-xs text-stone-400">
+                  {deletionTarget.type === 'menu_item' && 'Excluir item do cardápio'}
+                  {deletionTarget.type === 'category' && 'Excluir categoria de pratos'}
+                  {deletionTarget.type === 'table' && 'Excluir mesa do salão'}
+                </p>
+              </div>
+            </div>
+
+            <div className="bg-stone-950 border border-stone-800/80 rounded-2xl p-4 space-y-1">
+              <span className="text-[10px] uppercase font-black tracking-wider text-stone-500">
+                Item selecionado para exclusão
+              </span>
+              <p className="text-sm font-bold text-white break-words">{deletionTarget.name}</p>
+              {deletionTarget.extraInfo && (
+                <p className="text-xs text-amber-400 font-semibold">{deletionTarget.extraInfo}</p>
+              )}
+            </div>
+
+            <form onSubmit={handleConfirmSecureDelete} className="space-y-4">
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-xs font-bold text-stone-300 flex items-center gap-1.5">
+                    <Lock className="w-3.5 h-3.5 text-amber-400" />
+                    <span>Senha de Exclusão do Administrador:</span>
+                  </label>
+                  <span className="text-[10px] text-stone-500">Padrão inicial: 1234</span>
+                </div>
+                <div className="relative">
+                  <input
+                    type={showDeletePassword ? 'text' : 'password'}
+                    value={deletePasswordInput}
+                    onChange={(e) => {
+                      setDeletePasswordInput(e.target.value);
+                      if (deletePasswordError) setDeletePasswordError(null);
+                    }}
+                    placeholder="Digite a senha de exclusão"
+                    autoFocus
+                    required
+                    className="w-full bg-stone-950 border border-stone-700 focus:border-red-500 rounded-xl py-3 px-3.5 pr-10 text-sm text-white font-mono tracking-wider focus:outline-none transition shadow-inner"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowDeletePassword(!showDeletePassword)}
+                    className="absolute right-3 top-3 text-stone-400 hover:text-white transition cursor-pointer"
+                    title={showDeletePassword ? 'Ocultar senha' : 'Ver senha'}
+                  >
+                    {showDeletePassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+                {deletePasswordError && (
+                  <p className="text-xs text-red-400 font-semibold mt-2 flex items-center gap-1.5 animate-fadeIn">
+                    <AlertTriangle className="w-4 h-4 shrink-0" />
+                    <span>{deletePasswordError}</span>
+                  </p>
+                )}
+              </div>
+
+              <div className="text-[11px] text-stone-400 bg-stone-800/40 p-2.5 rounded-xl border border-stone-800/50">
+                🔒 Você pode alterar esta senha a qualquer momento na aba <strong>&quot;Marca &amp; Loja&quot;</strong>.
+              </div>
+
+              <div className="flex gap-2.5 pt-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDeletionTarget(null);
+                    setDeletePasswordInput('');
+                    setDeletePasswordError(null);
+                  }}
+                  disabled={isDeletingSecurely}
+                  className="flex-1 py-3 bg-stone-800 hover:bg-stone-750 text-stone-300 text-xs font-bold rounded-xl transition cursor-pointer disabled:opacity-50"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={isDeletingSecurely || !deletePasswordInput.trim()}
+                  className="flex-1 py-3 bg-red-600 hover:bg-red-500 disabled:opacity-50 text-white text-xs font-black rounded-xl shadow-lg shadow-red-600/20 flex items-center justify-center gap-2 transition cursor-pointer active:scale-95"
+                >
+                  {isDeletingSecurely ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Excluindo...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Trash2 className="w-4 h-4" />
+                      <span>Confirmar e Excluir</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

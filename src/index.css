@@ -1,1 +1,82 @@
 @import "tailwindcss";
+
+@layer base {
+  @media print {
+    /* Page margins and layout */
+    @page {
+      margin: 8mm;
+      size: auto;
+    }
+
+    /* Clean white background and visible overflow */
+    html, body, #root {
+      background: #ffffff !important;
+      color: #000000 !important;
+      height: auto !important;
+      min-height: auto !important;
+      overflow: visible !important;
+      margin: 0 !important;
+      padding: 0 !important;
+    }
+
+    /* Hide all dashboard chrome, navigation, tabs, forms, buttons when printing */
+    header,
+    nav,
+    aside,
+    button,
+    .no-print,
+    .print\\:hidden,
+    [role="navigation"],
+    .admin-dashboard-container {
+      display: none !important;
+    }
+
+    /* Modal wrapper reset for print */
+    .print-modal-container {
+      position: static !important;
+      display: flex !important;
+      justify-content: center !important;
+      align-items: center !important;
+      background: #ffffff !important;
+      padding: 0 !important;
+      margin: 0 auto !important;
+      width: 100% !important;
+      min-height: auto !important;
+      box-shadow: none !important;
+    }
+
+    /* Complete Card layout in print (Exact replica of the screen display card) */
+    .printable-tent-card {
+      display: block !important;
+      position: relative !important;
+      width: 380px !important;
+      max-width: 380px !important;
+      margin: 15px auto !important;
+      padding: 24px 20px !important;
+      border: 3.5px solid #18181b !important;
+      border-radius: 24px !important;
+      page-break-inside: avoid !important;
+      break-inside: avoid !important;
+      background: #ffffff !important;
+      color: #000000 !important;
+      -webkit-print-color-adjust: exact !important;
+      print-color-adjust: exact !important;
+      box-sizing: border-box !important;
+      box-shadow: none !important;
+    }
+
+    /* Ensure all badges, backgrounds, amber boxes and borders print exactly */
+    .printable-tent-card * {
+      -webkit-print-color-adjust: exact !important;
+      print-color-adjust: exact !important;
+    }
+
+    /* Ensure QR code image is crisp and centered in print */
+    .printable-tent-card img {
+      image-rendering: pixelated;
+      display: block !important;
+      margin-left: auto !important;
+      margin-right: auto !important;
+    }
+  }
+}
